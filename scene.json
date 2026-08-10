@@ -3,7 +3,7 @@
   "runtimeVersion": "7",
   "main": "bin/index.js",
   "display": {
-    "title": "Scrabble Rush",
+    "title": "Letterush",
     "description": "Race through four themed parkour zones to collect letter tiles, then race back to the giant 21x21 board to spell words and score. Multiplayer, 10-minute rounds.",
     "favicon": "favicon_asset"
   },

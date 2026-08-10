@@ -1,7 +1,7 @@
 {
-  "name": "dcl-scrabble-rush",
+  "name": "dcl-letterush",
   "version": "1.0.0",
-  "description": "Multiplayer Scrabble + Parkour — Decentraland Game Jam 2026",
+  "description": "Multiplayer Letters and Words + Parkour — Decentraland Game Jam 2026",
   "scripts": {
     "start": "sdk-commands start",
     "deploy": "sdk-commands deploy",
