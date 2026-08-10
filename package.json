@@ -1,0 +1,22 @@
+{
+  "name": "dcl-scrabble-parkour",
+  "version": "1.0.0",
+  "description": "Multiplayer Scrabble + Parkour — Decentraland Game Jam 2026",
+  "scripts": {
+    "start": "sdk-commands start",
+    "deploy": "sdk-commands deploy",
+    "build": "sdk-commands build",
+    "gen:world": "node tools/gen-world.mjs",
+    "gen:dict": "node tools/gen-dictionary.mjs",
+    "fetch:models": "bash tools/fetch-models.sh",
+    "check": "node tools/check-logic.mjs",
+    "verify": "npm run gen:world && npm run check && npm run build",
+    "upgrade-sdk": "npm install --save-dev @dcl/sdk@latest",
+    "upgrade-sdk-next": "npm install --save-dev @dcl/sdk@next"
+  },
+  "devDependencies": {
+    "@dcl/js-runtime": "7.25.0",
+    "@dcl/sdk": "7.25.0",
+    "typescript": "^5.4.5"
+  }
+}

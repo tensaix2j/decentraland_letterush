@@ -1,0 +1,8 @@
+{
+  "extends": "@dcl/sdk/types/tsconfig.ecs7.json",
+  "compilerOptions": {
+    "outDir": "bin",
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "assets/scene/*.ts"]
+}
