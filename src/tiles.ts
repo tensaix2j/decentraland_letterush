@@ -388,17 +388,18 @@ function inputSystemTick(dt: number): void {
   // here is keyboard-ONLY: dropping is also on F when nothing is staged, and
   // selection on mobile is done by tapping the bag row directly.
   //
-  // [1] drop, [2]/[3] next/previous. Dropping gets the first key because it's
-  // the one you reach for under pressure — holding a letter you can't use
-  // while the clock runs down.
+  // [1] drop, [2] previous, [3] next. Dropping gets the first key because
+  // it's the one you reach for under pressure — holding a letter you can't
+  // use while the clock runs down. 2-back/3-forward reads more naturally in
+  // ascending order than the reverse.
   if (inputSystem.isTriggered(InputAction.IA_ACTION_3, PointerEventType.PET_DOWN)) {
     dropSelected()
   }
   if (inputSystem.isTriggered(InputAction.IA_ACTION_4, PointerEventType.PET_DOWN)) {
-    cycleSelection(1)
+    cycleSelection(-1)
   }
   if (inputSystem.isTriggered(InputAction.IA_ACTION_5, PointerEventType.PET_DOWN)) {
-    cycleSelection(-1)
+    cycleSelection(1)
   }
   if (inputSystem.isTriggered(InputAction.IA_SECONDARY, PointerEventType.PET_DOWN)) {
     // F does double duty: submit the staged word if there is one, otherwise

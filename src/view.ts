@@ -17,6 +17,7 @@ import {
   VisibilityComponent
 } from '@dcl/sdk/ecs'
 import { Color3, Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
+import { getPlatform } from '@dcl/sdk/platform'
 import { TEXTURE_ALPHABET, TileStatus } from './config'
 import { letterTextureCrop } from './letters'
 import { BOARD_CELL_SIZE, BOARD_Y } from './generated/layout'
@@ -59,16 +60,27 @@ const BOARD_LETTER_SIZE = 1.3
  * and remapping that through one shared transform crops the same rectangle
  * everywhere regardless of any individual face's winding or starting corner.
  * The mesh keeps its default UVs; only the texture changes.
+ *
+ * Rebuildable, not a one-time const: see `applyPlatformFixes` below —
+ * Unity Explorer and Godot Explorer sample this V axis in opposite
+ * directions, and which one a client is can't be known until a few frames
+ * after startup, so this may get rebuilt once with the corrected flip.
  */
-const LETTER_TEXTURES = Array.from({ length: 26 }, (_, i) => {
-  const crop = letterTextureCrop(i)
-  return Material.Texture.Common({
-    src: TEXTURE_ALPHABET,
-    wrapMode: TextureWrapMode.TWM_CLAMP,
-    offset: crop.offset,
-    tiling: crop.tiling
+function buildLetterTextures(flip: boolean) {
+  return Array.from({ length: 26 }, (_, i) => {
+    const crop = letterTextureCrop(i, flip)
+    return Material.Texture.Common({
+      src: TEXTURE_ALPHABET,
+      wrapMode: TextureWrapMode.TWM_CLAMP,
+      offset: crop.offset,
+      tiling: crop.tiling
+    })
   })
-})
+}
+
+/** Confirmed correct for Godot Explorer (desktop/mobile/VR) — see letters.ts. */
+let flipV = true
+let LETTER_TEXTURES = buildLetterTextures(flipV)
 
 const backingOf = new Map<Entity, Entity>()
 const decalOf = new Map<Entity, Entity>()
@@ -135,6 +147,66 @@ const DECAL_MATERIAL = (letterIndex: number) => ({
 function styleAsLetter(parent: Entity, letterIndex: number): void {
   const { decal } = ensureLetterVisual(parent)
   Material.setPbrMaterial(decal, DECAL_MATERIAL(letterIndex))
+  activeLetterIndex.set(parent, letterIndex)
+}
+
+/**
+ * Every currently-styled letter parent and which glyph it's showing —
+ * covers loose tiles, board letters, and staged previews alike. The only
+ * reason this exists is `applyPlatformFixes`: when the V-flip correction
+ * lands a few frames after everything above has already been drawn once with
+ * the (possibly wrong) default, this is what gets walked to redraw it right.
+ * Entries are removed alongside their entity wherever this file destroys one.
+ */
+const activeLetterIndex = new Map<Entity, number>()
+
+/**
+ * Unity Explorer and Godot Explorer were confirmed, side by side, to disagree
+ * on TWO independent things for a letter cube, both traced to the same root
+ * cause — they sample a mesh material's V axis in opposite directions:
+ *
+ *  - `letterTextureCrop`'s offset/tiling (see that function's comment) — which
+ *    LETTER shows.
+ *  - The board letter yaw (see `boardYaw` below) — which WAY the glyph faces,
+ *    since the box's default UV unwrap on opposite faces is itself mirrored
+ *    by the same V flip, so getting the crop right and getting the facing
+ *    right are two separate corrections, not one.
+ *
+ * `getPlatform()` only resolves a few frames after scene start (it's an async
+ * round trip to the runtime), so neither can just be read once at module
+ * load; this polls until an answer arrives, corrects whichever of the two
+ * this client needs, and redraws/re-rotates everything already on screen.
+ *
+ * Unity Explorer has no mobile or VR build, so `desktop` is the only
+ * `getPlatform()` value it can ever report — branching on that alone is
+ * enough to separate it from Godot Explorer's desktop/mobile/VR builds,
+ * which all confirmed the opposite (default) behaviour for both.
+ */
+let platformFixDone = false
+function applyPlatformFixes(): void {
+  if (platformFixDone) return
+  const platform = getPlatform()
+  if (platform === null) return // not resolved yet — keep polling
+  platformFixDone = true
+
+  const isUnity = platform === 'desktop'
+
+  const shouldFlip = !isUnity
+  if (shouldFlip !== flipV) {
+    flipV = shouldFlip
+    LETTER_TEXTURES = buildLetterTextures(flipV)
+    for (const [parent, letterIndex] of activeLetterIndex) {
+      styleAsLetter(parent, letterIndex)
+    }
+  }
+
+  const correctYaw = isUnity ? BOARD_LETTER_YAW_UNITY : BOARD_LETTER_YAW_GODOT
+  if (correctYaw !== boardYaw) {
+    boardYaw = correctYaw
+    const rotation = Quaternion.fromEulerDegrees(0, boardYaw, 0)
+    for (const entity of boardLetterEntities.values()) Transform.getMutable(entity).rotation = rotation
+    for (const entity of stagedLetterEntities.values()) Transform.getMutable(entity).rotation = rotation
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -154,11 +226,23 @@ export function setupTileVisuals(): void {
       parent: tile
     })
     styleAsLetter(child, 0)
-    VisibilityComponent.create(child, { visible: false })
+    // propagateToChildren MUST be explicit. `child` carries no mesh of its
+    // own — the actual renderers are `backing`/`decal`, grandchildren created
+    // inside styleAsLetter. Per PBVisibilityComponent's own spec: an entity
+    // with no OWN visibility component is only hidden by a PARENT that has
+    // propagate=true; with it left at the default (false), backing/decal
+    // have no own component and no propagating ancestor, so the spec's own
+    // fallback rule makes them "visible" regardless of what `child` says.
+    // Godot Explorer happened to cascade hidden state through the hierarchy
+    // anyway (ordinary scene-graph behaviour for it); Unity Explorer applied
+    // the spec literally, so a "picked up" tile stayed rendered in the world
+    // on desktop while correctly vanishing from it on mobile.
+    VisibilityComponent.create(child, { visible: false, propagateToChildren: true })
     tileVisuals.push({ child, letter: -1, visible: false })
   }
 
   engine.addSystem(tileVisualSystem)
+  engine.addSystem(applyPlatformFixes)
 }
 
 let spinAccum = 0
@@ -180,7 +264,10 @@ function tileVisualSystem(dt: number): void {
 
     if (shouldShow !== visual.visible) {
       visual.visible = shouldShow
-      VisibilityComponent.createOrReplace(visual.child, { visible: shouldShow })
+      // propagateToChildren: true here too — see the comment in
+      // setupTileVisuals. createOrReplace with only `visible` set would drop
+      // back to the field's own default (propagate=false) on every toggle.
+      VisibilityComponent.createOrReplace(visual.child, { visible: shouldShow, propagateToChildren: true })
     }
     if (!shouldShow || !state) continue
 
@@ -206,9 +293,20 @@ function tileVisualSystem(dt: number): void {
  * Board rows run along +Z (row 0 is the low-Z edge), so the direction that
  * reads as "up"/the top of the board is -Z. The box's default unwrap puts the
  * glyph the other way round, which left placed letters facing away from the
- * board's reading direction — a half turn lines them up.
+ * board's reading direction — a half turn lines them up. Confirmed on Godot
+ * Explorer (desktop/mobile/VR).
+ *
+ * Unity Explorer needs the OTHER half turn — same root cause as the
+ * offset/tiling V-flip in `letterTextureCrop`: its mesh V axis runs the
+ * opposite way, which flips the box's default UV unwrap on the faces this
+ * yaw is compensating for, so the correction has to invert too. See
+ * `applyPlatformFixes`, which is what actually decides which of these two a
+ * given client uses at runtime — `boardYaw` starts on the Godot value and
+ * only changes if the client turns out to be Unity.
  */
-const BOARD_LETTER_YAW = 180
+const BOARD_LETTER_YAW_GODOT = 180
+const BOARD_LETTER_YAW_UNITY = 0
+let boardYaw = BOARD_LETTER_YAW_GODOT
 
 /**
  * How much of a committed letter still shows above the board surface.
@@ -241,7 +339,7 @@ function createBoardLetterEntity(cell: number, inset: boolean): Entity {
   const y = inset ? BOARD_Y + BOARD_LETTER_PROTRUSION - side / 2 : BOARD_Y + side / 2
   Transform.create(entity, {
     position: Vector3.create(centre.x, y, centre.z),
-    rotation: Quaternion.fromEulerDegrees(0, BOARD_LETTER_YAW, 0),
+    rotation: Quaternion.fromEulerDegrees(0, boardYaw, 0),
     scale: Vector3.create(side, side, side)
   })
   return entity
@@ -263,6 +361,7 @@ export function syncBoardVisuals(): void {
       if (existing) {
         engine.removeEntity(existing)
         boardLetterEntities.delete(i)
+        activeLetterIndex.delete(existing)
       }
       boardLetterValues.delete(i)
       continue
@@ -281,7 +380,10 @@ export function syncBoardVisuals(): void {
 
 /** Drop every rendered letter — used when a round resets. */
 export function clearBoardVisuals(): void {
-  for (const entity of boardLetterEntities.values()) engine.removeEntity(entity)
+  for (const entity of boardLetterEntities.values()) {
+    engine.removeEntity(entity)
+    activeLetterIndex.delete(entity)
+  }
   boardLetterEntities.clear()
   boardLetterValues.clear()
 }
@@ -312,11 +414,15 @@ export function clearStagedLetter(cell: number): void {
   if (entity) {
     engine.removeEntity(entity)
     stagedLetterEntities.delete(cell)
+    activeLetterIndex.delete(entity)
   }
 }
 
 export function clearAllStagedLetters(): void {
-  for (const entity of stagedLetterEntities.values()) engine.removeEntity(entity)
+  for (const entity of stagedLetterEntities.values()) {
+    engine.removeEntity(entity)
+    activeLetterIndex.delete(entity)
+  }
   stagedLetterEntities.clear()
 }
 

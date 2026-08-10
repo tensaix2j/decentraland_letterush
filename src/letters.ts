@@ -91,12 +91,21 @@ const PAD = 0.0015
  * mapping between the two broke whichever one wasn't fixed for. Row 0 (A..H,
  * meant to be the sheet's bottom) has to land on the sheet's LAST stored PNG
  * row here, since PNG rows are stored top-down but v=0 reads as bottom.
+ *
+ * `flip` exists because that GL convention turned out to only be half the
+ * story: Decentraland has two independent official client codebases —
+ * Unity Explorer (desktop-only) and Godot Explorer (desktop/mobile/VR) — and
+ * they were confirmed, side by side, to sample a mesh material's V axis in
+ * OPPOSITE directions for the exact same `offset`/`tiling` numbers. Godot
+ * renders correctly with `flip = true` (the mapping above); Unity needs
+ * `flip = false` — i.e. row used directly, no bottom-up inversion — to show
+ * the same letter. See view.ts for which platforms get which.
  */
 export type TextureCrop = { offset: { x: number; y: number }; tiling: { x: number; y: number } }
 
-export function letterTextureCrop(index: number): TextureCrop {
+export function letterTextureCrop(index: number, flip: boolean): TextureCrop {
   const { col, row } = letterCell(index)
-  const imgRow = SHEET_ROWS - 1 - row
+  const imgRow = flip ? SHEET_ROWS - 1 - row : row
   const u0 = col / SHEET_COLS + PAD
   const u1 = (col + 1) / SHEET_COLS - PAD
   const v0 = imgRow / SHEET_ROWS + PAD
