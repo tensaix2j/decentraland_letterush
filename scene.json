@@ -194,9 +194,12 @@
     "fixedTime": 43200
   },
   "worldConfiguration": {
-    "name": "CHANGE-ME.dcl.eth",
+    "name": "tensaix2j.dcl.eth",
     "skyboxConfig": {
       "fixedTime": 43200
+    },
+    "placesConfig": {
+      "optOut": true
     }
   },
   "landscapeTerrain": false

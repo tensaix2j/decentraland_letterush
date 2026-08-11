@@ -23,6 +23,7 @@ import { setupPerformance, snapshotDecor } from './perf'
 import { quality } from './platform'
 import { getRound } from './state'
 import { setupSfx } from './sfx'
+import { setupAnalytics } from './analytics'
 
 let lastRenderedRound = -1
 
@@ -49,6 +50,7 @@ export function main(): void {
   setupHost(bus)
   setupUi()
   setupPerformance()
+  void setupAnalytics()
 
   engine.addSystem(boardRenderSystem)
 

@@ -114,11 +114,29 @@ function StatusPanel(props: { t: Theme }) {
         value={`ROUND ${round ? round.roundId : '—'}`}
         fontSize={t.font.title}
         color={ACCENT}
-        uiTransform={{ height: 24 }}
+        textWrap="nowrap"
+        uiTransform={{ width: '100%', height: 24 }}
       />
-      <Label value={label} fontSize={t.font.clock} color={TEXT} uiTransform={{ height: 46 }} />
+      <Label
+        value={label}
+        fontSize={t.font.clock}
+        color={TEXT}
+        textWrap="nowrap"
+        uiTransform={{ width: '100%', height: 46 }}
+      />
       {isHost() ? (
-        <Label value="host" fontSize={t.font.tiny} color={MUTED} uiTransform={{ height: 20 }} />
+        // Without an explicit width, this leaf had no box to size against and
+        // was wrapping "host" onto two lines mid-word ("hos" / "t") — a
+        // 4-character string had no business wrapping at all. width: 100%
+        // gives it the panel's actual width to lay out against, and nowrap is
+        // belt-and-braces so it can't happen again regardless of that.
+        <Label
+          value="host"
+          fontSize={t.font.tiny}
+          color={MUTED}
+          textWrap="nowrap"
+          uiTransform={{ width: '100%', height: 20 }}
+        />
       ) : null}
     </UiEntity>
   )

@@ -862,6 +862,40 @@ function buildWest() {
   }
 }
 
+/**
+ * A storey slab with a rectangular hole left open, tiled as up to 4
+ * axis-aligned pieces around the hole rather than one solid box (there's no
+ * boolean/CSG subtraction available to `add()`, so a real hole means not
+ * covering that rectangle with geometry at all).
+ *
+ * Without this, every tomb ramp dead-ended into a solid ceiling: the storey
+ * above covered its ENTIRE footprint with no opening anywhere, regardless of
+ * where the ramp below it actually arrived — a ramp to nowhere.
+ */
+function addFloorRing(labelPrefix, y, color, outer, hole) {
+  const pieces = [
+    // West/east strips run the full depth; north/south only span the gap
+    // BETWEEN them, so the 4 pieces tile the ring without corner overlap.
+    { x0: outer.x0, x1: hole.x0, z0: outer.z0, z1: outer.z1, name: 'West' },
+    { x0: hole.x1, x1: outer.x1, z0: outer.z0, z1: outer.z1, name: 'East' },
+    { x0: hole.x0, x1: hole.x1, z0: outer.z0, z1: hole.z0, name: 'North' },
+    { x0: hole.x0, x1: hole.x1, z0: hole.z1, z1: outer.z1, name: 'South' }
+  ]
+  for (const p of pieces) {
+    const sx = p.x1 - p.x0
+    const sz = p.z1 - p.z0
+    if (sx <= 0.05 || sz <= 0.05) continue // hole flush with this edge — nothing to fill
+    add({
+      name: `${labelPrefix} ${p.name}`,
+      pos: [(p.x0 + p.x1) / 2, y, (p.z0 + p.z1) / 2],
+      scale: [sx, 0.5, sz],
+      color,
+      lift: INTERIOR_LIFT,
+      collider: 3
+    })
+  }
+}
+
 /* ================================================================== *
  * SOUTH — Egyptian multi-storey maze tower
  * ================================================================== */
@@ -881,19 +915,15 @@ function buildSouth() {
   const cols = 3
   const rows = 3
 
+  // The shaft (sc, sr — grid cell coords) that THIS floor's ramp climbs up
+  // through, handed forward so the NEXT floor's slab knows where to leave a
+  // hole open for it to arrive. ox/oz/step are floor-invariant (cols/rows
+  // never change between storeys), so reusing the current iteration's copies
+  // against a shaft computed last iteration is exact, not an approximation.
+  let prevShaft = null
+
   for (let f = 0; f < FLOORS; f++) {
     const baseY = 0.05 + f * FLOOR_H
-    // storey slab (skip ground floor — the sand already covers it)
-    if (f > 0) {
-      add({
-        name: `Tower Floor ${f}`,
-        pos: [cx, baseY - 0.25, cz],
-        scale: [span, 0.5, span],
-        color: C.sandstoneDark,
-        lift: INTERIOR_LIFT,
-        collider: 3
-      })
-    }
 
     const { wall, W, H } = generateMaze(cols, rows)
     braidMaze(wall, W, H, 0.2)
@@ -902,6 +932,20 @@ function buildSouth() {
     const oz = z0 + INSET
     const wallH = FLOOR_H - 0.6
 
+    // Storey slab (skip ground floor — the sand already covers it). Built
+    // AFTER ox/oz/step above so it can cut the hole the previous floor's ramp
+    // needs to arrive through — see addFloorRing.
+    if (f > 0) {
+      const outer = { x0: ox, x1: ox + span, z0: oz, z1: oz + span }
+      const hole = {
+        x0: ox + prevShaft.sc * step,
+        x1: ox + (prevShaft.sc + 3) * step,
+        z0: oz + prevShaft.sr * step,
+        z1: oz + (prevShaft.sr + 3) * step
+      }
+      addFloorRing(`Tower Floor ${f}`, baseY - 0.25, C.sandstoneDark, outer, hole)
+    }
+
     // Entrance on the north face (facing the plaza) for the ground floor
     if (f === 0) wall[H - 1][Math.floor(W / 2)] = false
 
@@ -909,6 +953,7 @@ function buildSouth() {
     const sc = ri(2, W - 5)
     const sr = ri(2, H - 5)
     for (let r = sr; r < sr + 3; r++) for (let c = sc; c < sc + 3; c++) wall[r][c] = false
+    prevShaft = { sc, sr }
 
     for (const run of mergeWallRuns(wall, W, H)) {
       const lenC = run.c1 - run.c0 + 1

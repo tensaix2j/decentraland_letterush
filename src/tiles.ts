@@ -305,13 +305,16 @@ function inventorySystem(dt: number): void {
   }
 }
 
+/** How often "Bag is full" may re-toast while standing next to a tile with no room for it. */
+const FULL_BAG_TOAST_COOLDOWN_MS = 3000
+let lastFullBagToastAt = 0
+
 let pickupAccum = 0
 function pickupSystem(dt: number): void {
   pickupAccum += dt
   if (pickupAccum < quality().pickupInterval) return
   pickupAccum = 0
 
-  if (inventory.length >= MAX_INVENTORY) return
   const me = myAddress()
   const pos = myPosition()
   if (!me || !pos) return
@@ -334,6 +337,22 @@ function pickupSystem(dt: number): void {
       bestDist = d2
       bestTile = tile
     }
+  }
+
+  // A tile is in range but there's nowhere to put it. This needs its own
+  // check AFTER finding a candidate, not a blanket early-return at the top of
+  // the function — otherwise every player walking around with a full bag,
+  // nowhere near a tile, would silently do nothing (fine), but the moment
+  // they DID want to know ("I'm standing on a tile, why isn't it picking
+  // up?") they'd get no feedback at all. Cooldown-gated so standing on a tile
+  // doesn't spam the toast queue every pickupInterval.
+  if (bestTile && inventory.length >= MAX_INVENTORY) {
+    const now = Date.now()
+    if (now - lastFullBagToastAt >= FULL_BAG_TOAST_COOLDOWN_MS) {
+      lastFullBagToastAt = now
+      pushToast('Bag is full', false, 1800)
+    }
+    return
   }
 
   if (!bestTile) return

@@ -4,7 +4,7 @@
   "description": "Multiplayer Letters and Words + Parkour — Decentraland Game Jam 2026",
   "scripts": {
     "start": "sdk-commands start",
-    "deploy": "sdk-commands deploy",
+    "deploy": "sdk-commands deploy --target-content https://worlds-content-server.decentraland.org",
     "build": "sdk-commands build",
     "gen:world": "node tools/gen-world.mjs",
     "gen:dict": "node tools/gen-dictionary.mjs",
