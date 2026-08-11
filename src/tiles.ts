@@ -124,6 +124,7 @@ export function selectSlot(index: number): void {
   if (index >= 0 && index < inventory.length) {
     selected = index
     playSelectSound()
+    pushToast('Press E to place the tile on the board', true, 2200)
   }
 }
 

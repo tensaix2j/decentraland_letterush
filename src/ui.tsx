@@ -462,7 +462,7 @@ function Hint(props: { t: Theme }) {
     text = `Press F to submit (${staged} tile${staged === 1 ? '' : 's'})`
     urgent = true
   } else if (inventory.length === 0) {
-    text = 'Find tiles in the four zones'
+    text = 'Find letter tiles in the four themed zones'
   } else if (cell >= 0 && reason) {
     text = reason
   }
@@ -612,11 +612,11 @@ function DesktopUi(t: Theme) {
         <Toasts t={t} />
         <Hint t={t} />
         <Bag t={t} />
-        <Label
+        <OutlinedLabel
           value={`BAG  ${getInventory().length} / ${MAX_INVENTORY}   ·   [1] drop   ·   [2]/[3] switch   ·   [E] stage   ·   [F] submit`}
           fontSize={t.font.tiny}
           color={MUTED}
-          uiTransform={{ height: 22 }}
+          height={22}
         />
       </UiEntity>
 
