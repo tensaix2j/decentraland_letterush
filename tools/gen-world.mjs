@@ -832,6 +832,31 @@ function addFoundryPlatform(px, baseY, pz, widthX, widthZ, thickness, extra = {}
   return id
 }
 
+/**
+ * assets/models/crate.glb replaces the "Steel Crate" primitive stacks. Per
+ * the user: a unit (1x1x1) box, pivoted at its base centre, with its own
+ * "*_collider" node — so, same convention as the pyramid/mountains/pipes, no
+ * explicit collision mask is needed.
+ */
+const CRATE_MODEL_SRC = 'assets/models/crate.glb'
+if (!existsSync(resolve(ROOT, CRATE_MODEL_SRC))) {
+  throw new Error(`Missing ${CRATE_MODEL_SRC} — the Foundry's crate stacks need this model.`)
+}
+
+/** Place a crate with its base at `baseY`, `size` metres per side (uniform — it's a cube). Extra `add()` fields (e.g. rot) merge in via `extra`. */
+function addCrate(px, baseY, pz, size, extra = {}) {
+  const id = add({
+    name: 'Steel Crate',
+    pos: [px, baseY, pz],
+    scale: [size, size, size],
+    mesh: 'none',
+    collider: 0,
+    ...extra
+  })
+  gltfContainers[id] = { json: { src: CRATE_MODEL_SRC } }
+  return id
+}
+
 /* ================================================================== *
  * WEST — Industrial parkour
  * ================================================================== */
@@ -934,16 +959,10 @@ function buildWest() {
     const pz = rf(z0 + 4, z0 + BLOCK - 4)
     const stack = ri(1, 3)
     for (let s = 0; s < stack; s++) {
-      add({
-        name: 'Steel Crate',
-        pos: [px + rf(-0.3, 0.3), 0.85 + s * 1.7, pz + rf(-0.3, 0.3)],
-        scale: [1.7, 1.7, 1.7],
-        rot: yawQuat(rf(0, 90)),
-        color: s % 2 ? C.indRust : C.indSteelDark,
-        metallic: 0.6,
-        roughness: 0.5,
-        collider: 3
-      })
+      // Base-anchored model, so the base sits directly at s * 1.7 (each
+      // crate is 1.7m tall) rather than the old centre-pivoted primitive's
+      // 0.85 + s * 1.7.
+      addCrate(px + rf(-0.3, 0.3), s * 1.7, pz + rf(-0.3, 0.3), 1.7, { rot: yawQuat(rf(0, 90)) })
     }
     addAnchor('WEST', px, 0.85 + stack * 1.7, pz)
   }

@@ -21,7 +21,7 @@
 
 import ReactEcs, { Label, PositionUnit, ReactEcsRenderer, UiEntity } from '@dcl/sdk/react-ecs'
 import { Color4 } from '@dcl/sdk/math'
-import { MAX_INVENTORY, TEXTURE_ALPHABET } from './config'
+import { MAX_INVENTORY, TEXTURE_ALPHABET_UI } from './config'
 import { getLeaderboard, getRound } from './state'
 import {
   activeToasts,
@@ -259,7 +259,7 @@ function TileSlot(props: { key?: string; t: Theme; letter: number; index: number
       // borderRadius. The sprite sheet is already black glyphs on a fully
       // transparent background, so dropping the fill leaves just the glyph.
       uiBackground={{
-        texture: { src: TEXTURE_ALPHABET },
+        texture: { src: TEXTURE_ALPHABET_UI },
         textureMode: 'stretch',
         uvs: letterUiUvs(props.letter)
       }}
@@ -346,7 +346,7 @@ function MobileBagRow(props: { t: Theme }) {
             ? {
                 // No `color` — see TileSlot: it's a solid fill behind the
                 // texture, not a tint, and it was the white square.
-                texture: { src: TEXTURE_ALPHABET },
+                texture: { src: TEXTURE_ALPHABET_UI },
                 textureMode: 'stretch',
                 uvs: letterUiUvs(slot.letter)
               }

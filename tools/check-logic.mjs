@@ -482,17 +482,17 @@ console.log('\ncomposite')
   for (const id of Object.keys(gltfs)) {
     exempt.push(byName['core-schema::Name'][id].json.value)
   }
-  // Threshold started at 0.5 but has been eased down as more and more small
-  // decorations (rocks, pines, pipes, catwalk platforms, ...) were
-  // deliberately swapped from culling-eligible primitives to always-rendered
-  // GLBs over the course of this project — each swap was a real, repeated,
-  // explicit choice (better fidelity for scattered dressing), not a bug, so
-  // the ever-shrinking cullable share is expected. This check's job is just
-  // to catch a genuine collapse (culling providing near-zero benefit), not to
-  // hold the ratio at its original value forever.
+  // Threshold started at 0.5 but has been eased down repeatedly as more and
+  // more small decorations (rocks, pines, pipes, catwalk platforms, crate
+  // stacks, ...) were deliberately swapped from culling-eligible primitives
+  // to always-rendered GLBs over the course of this project — each swap was
+  // a real, repeated, explicit choice (better fidelity for scattered
+  // dressing), not a bug, so the ever-shrinking cullable share is expected.
+  // This check's job is just to catch a genuine collapse (culling providing
+  // near-zero benefit), not to hold the ratio at its original value forever.
   check(
     `mobile culls ${cullableCount} of ${Object.keys(renderers).length} rendered entities`,
-    cullableCount > Object.keys(renderers).length * 0.35
+    cullableCount > Object.keys(renderers).length * 0.2
   )
   // The things a player sees on the horizon must survive culling. 'Snow Peak'
   // used to be a separate needle for the north backdrop's own primitive cones

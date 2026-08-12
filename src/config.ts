@@ -57,6 +57,12 @@ export const ABANDON_MS = 20_000
 export const HOST_TICK_MS = 1000
 
 export const TEXTURE_ALPHABET = 'assets/textures/alphabets.png'
+/** UI-only sheet — same 26 letters, but with a white rounded tile background
+ * baked in behind each glyph (the 3D mesh crop above stays on the transparent
+ * one, since 3D tiles paint their own opaque backing separately — see
+ * view.ts). Different layout than TEXTURE_ALPHABET, not a straight recolor —
+ * see `letterUiUvs` in letters.ts for the cell mapping. */
+export const TEXTURE_ALPHABET_UI = 'assets/textures/alphabets_ui.png'
 
 /** Tile status stored in the synced TileState component. */
 export const enum TileStatus {
