@@ -1,6 +1,9 @@
 # LetteRush — Decentraland Game Jam 2026
 A fast-paced multiplayer game where you parkour around the world hunting for letters, then use them to build words on a shared board and compete for points.
 
+![](https://github.com/tensaix2j/decentraland_letterush/blob/master/assets/images/navmapThumbnail.jpg?raw=true)
+
+
 ## Scene
 A 12×12 parcel (144 parcels, 192 × 192 m) multiplayer world. Four themed parkour
 and maze zones scatter letter tiles; A giant 21 × 21 Scrabble like board in the middle
