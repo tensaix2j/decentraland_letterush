@@ -251,11 +251,21 @@ function add(opts) {
       pbr.emissiveColor = { r: opts.emissive[0], g: opts.emissive[1], b: opts.emissive[2] }
       pbr.emissiveIntensity = opts.emissiveIntensity || 1.5
     }
-    // A textured surface (e.g. the board's baked grid) uses the mesh's own
-    // default UVs directly — no offset/tiling crop needed, since the whole
-    // face should show the whole image, not a sub-rectangle of an atlas.
+    // A textured surface with no `textureTiling` (e.g. the board's baked
+    // grid) uses the mesh's own default UVs directly — the whole face shows
+    // the whole image once, since it's a single baked picture, not a
+    // repeating material. `textureTiling: [x, y]` opts into TWM_REPEAT and
+    // scales the UV so the image repeats that many times across the surface
+    // instead of stretching one copy over it — for tileable materials like
+    // sand/stone on walls whose size varies a lot (a short wall run and a
+    // 20 m one would otherwise show the same single stretched copy).
     if (opts.textureSrc) {
-      pbr.texture = { tex: { $case: 'texture', texture: { src: opts.textureSrc } } }
+      const texture = { src: opts.textureSrc }
+      if (opts.textureTiling) {
+        texture.wrapMode = 0 // TextureWrapMode.TWM_REPEAT
+        texture.tiling = { x: opts.textureTiling[0], y: opts.textureTiling[1] }
+      }
+      pbr.texture = { tex: { $case: 'texture', texture } }
     }
     materials[id] = { json: { material: { $case: 'pbr', pbr: internMaterial(pbr) } } }
   }
@@ -305,6 +315,14 @@ function meshJson(kind, opts) {
   if (kind === 'plane') return { $case: 'plane', plane: { uvs: [] } }
   return { $case: 'box', box: { uvs: [] } }
 }
+
+/** Metres of surface per texture repeat, for tileable materials (sand, stone, ...). */
+const TILE_METRES = 4
+/** [x, y] repeat count for a `textureTiling`-driven surface of this world size. */
+const tileRepeat = (widthM, heightM) => [
+  Math.max(1, widthM / TILE_METRES),
+  Math.max(1, heightM / TILE_METRES)
+]
 
 const r3 = (n) => Math.round(n * 1000) / 1000
 /** Keep a coordinate safely inside the scene footprint. */
@@ -361,6 +379,47 @@ const addAnchor = (zone, x, y, z) => anchors[zone].push([r3(x), r3(y + 1.0), r3(
 /* ================================================================== *
  * CENTER — Aztec plaza + 21x21 Scrabble board
  * ================================================================== */
+
+/**
+ * >>> ADJUST THE CORNER PYRAMID SCALE HERE. <<<
+ *
+ * The model's own geometry (assets/models/aztech_pyramid.glb, measured
+ * directly from its glTF accessors) is small: at PYRAMID_SCALE = [1,1,1] the
+ * visible mesh is only about 1.1 m wide/deep and 0.6 m tall, with its base
+ * already sitting at local y = 0 — so PYRAMID_SCALE is a plain multiplier of
+ * those numbers (e.g. 12 ⇒ roughly 13 m wide/deep, 7 m tall) and PYRAMID_Y
+ * shouldn't need to move to compensate for scale.
+ *
+ * The old stacked-slab pyramid this replaces was ~13 m wide at the base and
+ * ~5.2 m tall, which is where the starting value of 12 came from — tune it
+ * to taste once you can see the actual model in-world.
+ */
+const PYRAMID_MODEL_SRC = 'assets/models/aztech_pyramid.glb'
+const PYRAMID_SCALE = [12, 12, 12]
+const PYRAMID_ROT = IDENTITY_ROT
+const PYRAMID_Y = 0.05 // plaza floor top — matches slab('Plaza Floor', ...) below
+
+/**
+ * assets/models/arch.glb replaces the primitive post+lintel gates at the
+ * plaza's 4 zone entrances. Its own pivot sits at the base centre of the
+ * opening (measured minY = -0.0674, negligible — flat ground placement, same
+ * as the trees/mountains/pine). Native size is close to square (width
+ * 1.0125 x height 1.0184 x depth 0.189, all measured from the glTF
+ * accessors), so ARCH_TARGET_HEIGHT alone drives a uniform scale and the
+ * opening stays roughly as wide as it is tall.
+ *
+ * It ships its own dedicated "*_collider" nodes (one per post + the lintel),
+ * so — same convention as the pyramid/mountains/platform — no explicit
+ * collision mask is set below.
+ *
+ * >>> ADJUST GATE SIZE HERE <<<
+ */
+const ARCH_MODEL_SRC = 'assets/models/arch.glb'
+const ARCH_NATIVE_HEIGHT = 1.0184
+const ARCH_TARGET_HEIGHT = 7 // metres — matches the old post+lintel gate's overall height
+if (!existsSync(resolve(ROOT, ARCH_MODEL_SRC))) {
+  throw new Error(`Missing ${ARCH_MODEL_SRC} — the plaza's 4 gateways need this model.`)
+}
 
 // Premium-square pattern, defined on the 11x11 top-left quadrant and mirrored.
 const key = (a, b) => a * 100 + b
@@ -419,91 +478,71 @@ function buildCenter() {
     collider: 3
   })
 
-  // Aztec stepped pyramids at the four plaza corners
+  // Aztec pyramids at the four plaza corners — a single hand-placed GLB
+  // (assets/models/aztech_pyramid.glb), replacing the old 4-step stacked-slab
+  // primitive. Unlike the decorative props in the four zones (addModel(),
+  // gated behind --with-models + a fetch script), this is core plaza
+  // geometry now, so it's placed directly and unconditionally — the scene
+  // shouldn't lose its corner landmarks just because someone forgot a flag.
+  if (!existsSync(resolve(ROOT, PYRAMID_MODEL_SRC))) {
+    throw new Error(`Missing ${PYRAMID_MODEL_SRC} — the plaza's corner pyramids need this model.`)
+  }
   const pyramidSpots = [
     [x0 + 8, z0 + 8], [x0 + BLOCK - 8, z0 + 8],
     [x0 + 8, z0 + BLOCK - 8], [x0 + BLOCK - 8, z0 + BLOCK - 8]
   ]
   for (const [px, pz] of pyramidSpots) {
-    for (let step = 0; step < 4; step++) {
-      const w = 13 - step * 2
-      slab(`Aztec Pyramid Step ${step}`, px, pz, w, w, 0.05 + (step + 1) * 1.3, C.aztecStone, 1.3)
-    }
-    add({
-      name: 'Aztec Idol',
-      pos: [px, 8.6, pz],
-      scale: [1.4, 2.2, 1.4],
-      color: C.aztecJade,
-      emissive: [0.05, 0.35, 0.25],
-      emissiveIntensity: 1.2,
-      metallic: 0.4,
-      roughness: 0.3,
-      collider: 3
+    const id = add({
+      name: 'Aztec Pyramid',
+      pos: [px, PYRAMID_Y, pz],
+      scale: PYRAMID_SCALE,
+      rot: PYRAMID_ROT,
+      mesh: 'none', // geometry comes from the glTF below, not a primitive
+      collider: 0 // collision comes from the model's own collider mesh (see gltfContainers below), not a generic box
     })
+    // No explicit collision masks — PBGltfContainer's own defaults
+    // (visibleMeshesCollisionMask: 0, invisibleMeshesCollisionMask: CL_POINTER
+    // | CL_PHYSICS) already do exactly what this model wants: collide against
+    // its dedicated low-poly "obj_collider" node, not the detailed visible
+    // mesh. Setting them explicitly here would just be restating the default.
+    gltfContainers[id] = { json: { src: PYRAMID_MODEL_SRC } }
   }
 
-  // Glyph pillar ring around the board
-  const ringR = BOARD_SPAN / 2 + 7.5
-  const PILLAR_COUNT = 7
-  for (let i = 0; i < PILLAR_COUNT; i++) {
-    const a = (i / PILLAR_COUNT) * Math.PI * 2
-    const px = cx + Math.cos(a) * ringR
-    const pz = cz + Math.sin(a) * ringR
-    const h = rf(4, 6.5)
-    add({
-      name: 'Aztec Pillar',
-      pos: [px, h / 2 + 0.05, pz],
-      scale: [1.1, h, 1.1],
-      color: C.aztecStone,
-      collider: 3
-    })
-    add({
-      name: 'Aztec Pillar Glyph',
-      pos: [px, h + 0.5, pz],
-      scale: [1.35, 0.8, 1.35],
-      rot: yawQuat(i * (360 / PILLAR_COUNT)),
-      color: i % 3 === 0 ? C.aztecGold : C.aztecJade,
-      metallic: 0.5,
-      roughness: 0.35,
-      collider: 3
-    })
-  }
+  // The glyph pillar ring that used to circle the board here (7x "Aztec
+  // Pillar" + "Aztec Pillar Glyph" primitives, radius 28.5m from board
+  // centre) was removed: at that radius two of the seven pillars land only
+  // ~6.5m from a corner pyramid's footprint edge — about the same as the
+  // pyramid's own half-width at its current scale — so they read as
+  // clashing/overlapping the pyramid. It dated back to when the corner
+  // pyramids were small stacked-slab primitives; now that they're a much
+  // bigger GLB landmark, the ring is redundant clutter as well as a clash.
 
-  // Four ceremonial gateways aligned with the four gameplay zones
+  // Four ceremonial gateways aligned with the four gameplay zones — arch.glb
+  // (ARCH_MODEL_SRC, above) replaces the old primitive post+lintel pairs.
+  // The per-zone lintel tint (g.color) doesn't carry over: the GLB uses its
+  // own single baked material, so there's no per-instance recolor the way a
+  // primitive's `color` field allowed. The floating zone-name Sign is kept
+  // for wayfinding, just repositioned to sit above the new arch height.
   const gates = [
-    { name: 'Gate North (Ice)', x: cx, z: z0 + BLOCK - 1.5, yaw: 0, color: C.ice },
-    { name: 'Gate South (Desert)', x: cx, z: z0 + 1.5, yaw: 0, color: C.sand },
-    { name: 'Gate East (Jungle)', x: x0 + BLOCK - 1.5, z: cz, yaw: 90, color: C.jungleLeaf },
-    { name: 'Gate West (Foundry)', x: x0 + 1.5, z: cz, yaw: 90, color: C.indYellow }
+    { name: 'Gate North (Ice)', x: cx, z: z0 + BLOCK - 1.5, yaw: 0 },
+    { name: 'Gate South (Desert)', x: cx, z: z0 + 1.5, yaw: 0 },
+    { name: 'Gate East (Jungle)', x: x0 + BLOCK - 1.5, z: cz, yaw: 90 },
+    { name: 'Gate West (Foundry)', x: x0 + 1.5, z: cz, yaw: 90 }
   ]
+  const archScale = ARCH_TARGET_HEIGHT / ARCH_NATIVE_HEIGHT
   for (const g of gates) {
-    const rot = yawQuat(g.yaw)
-    const off = g.yaw === 0 ? [-3.5, 3.5] : [0, 0]
-    const offZ = g.yaw === 0 ? [0, 0] : [-3.5, 3.5]
-    for (let s = 0; s < 2; s++) {
-      add({
-        name: `${g.name} Post`,
-        pos: [g.x + off[s], 3.05, g.z + offZ[s]],
-        scale: [1.2, 6, 1.2],
-        rot,
-        color: C.aztecStone,
-        collider: 3
-      })
-    }
-    add({
-      name: `${g.name} Lintel`,
-      pos: [g.x, 6.4, g.z],
-      scale: g.yaw === 0 ? [9, 1.2, 1.6] : [1.6, 1.2, 9],
-      color: g.color,
-      emissive: g.color,
-      emissiveIntensity: 0.8,
-      metallic: 0.3,
-      roughness: 0.4,
-      collider: 3
+    const id = add({
+      name: g.name,
+      pos: [g.x, 0.05, g.z],
+      scale: [archScale, archScale, archScale],
+      rot: yawQuat(g.yaw),
+      mesh: 'none', // geometry comes from the glTF below, not a primitive
+      collider: 0
     })
+    gltfContainers[id] = { json: { src: ARCH_MODEL_SRC } }
     add({
       name: `${g.name} Sign`,
-      pos: [g.x, 8.2, g.z],
+      pos: [g.x, ARCH_TARGET_HEIGHT + 1.2, g.z],
       scale: [1, 1, 1],
       mesh: 'none',
       collider: 0,
@@ -595,6 +634,25 @@ function mergeWallRuns(wall, W, H) {
   return runs
 }
 
+/**
+ * The 3 canopy tree GLBs (assets/models/tree_0/1/2.glb), replacing the old
+ * trunk-cylinder + canopy-sphere primitive pair. `nativeHeight` was measured
+ * directly from each file's own glTF accessors (min/max Y across the whole
+ * mesh, accounting for the root node's own translation). All 3 are pivoted
+ * at their own base — bottom-middle sits at local (0,0,0) — so placement is
+ * just ground level, no per-model offset needed.
+ *
+ * >>> ADJUST TREE SIZE HERE <<< — see `targetHeight` where TREE_MODELS is
+ * used, in buildEast() below. Scale is derived from targetHeight and
+ * nativeHeight, so all 3 variants come out the same final height regardless
+ * of how tall their raw meshes happen to be.
+ */
+const TREE_MODELS = [
+  { src: 'assets/models/tree_0.glb', nativeHeight: 0.382 },
+  { src: 'assets/models/tree_1.glb', nativeHeight: 0.422 },
+  { src: 'assets/models/tree_2.glb', nativeHeight: 0.489 }
+]
+
 /* ================================================================== *
  * EAST — Jungle maze
  * ================================================================== */
@@ -637,30 +695,27 @@ function buildEast() {
     })
   }
 
-  // Passage cells become tile anchors + occasional foliage
+  // Passage cells become tile anchors
   for (let r = 1; r < H; r += 2) {
     for (let c = 1; c < W; c += 2) {
       if (wall[r][c]) continue
       const px = ox + (c + 0.5) * step
       const pz = oz + (r + 0.5) * step
       addAnchor('EAST', px, 0.05, pz)
-      if (rnd() < 0.12) {
-        const h = rf(1.4, 2.6)
-        add({
-          name: 'Jungle Fern',
-          pos: [px + rf(-0.3, 0.3), h / 2 + 0.05, pz + rf(-0.3, 0.3)],
-          scale: [0.9, h, 0.9],
-          mesh: 'cylinder',
-          radiusTop: 0.05,
-          radiusBottom: 0.35,
-          color: C.jungleLeaf,
-          collider: 0
-        })
-      }
     }
   }
 
-  // Canopy trees around the maze perimeter
+  // Canopy trees around the maze perimeter — 3 hand-placed GLB variants
+  // (TREE_MODELS, above), replacing the old trunk-cylinder + canopy-sphere
+  // primitive pair. Unconditional/required, same treatment as the plaza's
+  // corner pyramid: this is core zone dressing now, not an optional
+  // --with-models prop, so the jungle shouldn't go bald if someone forgets
+  // that flag.
+  for (const t of TREE_MODELS) {
+    if (!existsSync(resolve(ROOT, t.src))) {
+      throw new Error(`Missing ${t.src} — the jungle's canopy trees need this model.`)
+    }
+  }
   for (let i = 0; i < 8; i++) {
     const edge = ri(0, 3)
     let px, pz
@@ -668,41 +723,113 @@ function buildEast() {
     else if (edge === 1) (px = rf(x0 + 3, x0 + BLOCK - 3)), (pz = rf(z0 + BLOCK - 4, z0 + BLOCK - 2.5))
     else if (edge === 2) (px = rf(x0 + 2.5, x0 + 4)), (pz = rf(z0 + 3, z0 + BLOCK - 3))
     else (px = rf(x0 + BLOCK - 4, x0 + BLOCK - 2.5)), (pz = rf(z0 + 3, z0 + BLOCK - 3))
-    const h = rf(7, 13)
-    add({
-      name: 'Jungle Tree Trunk',
-      pos: [px, h / 2 + 0.05, pz],
-      scale: [1, h, 1],
-      mesh: 'cylinder',
-      radiusTop: 0.28,
-      radiusBottom: 0.45,
-      color: C.jungleTrunk,
-      collider: 3
+
+    const tree = pick(TREE_MODELS)
+    const targetHeight = rf(8, 15) // final in-world height, metres — was rf(7,13) trunk + canopy before
+    const scale = targetHeight / tree.nativeHeight
+    const id = add({
+      name: 'Jungle Tree',
+      pos: [px, 0.05, pz], // all 3 models are pivoted at their own base — see TREE_MODELS
+      scale: [scale, scale, scale],
+      rot: yawQuat(rf(0, 360)),
+      mesh: 'none', // geometry comes from the glTF below, not a primitive
+      collider: 0
     })
-    for (let k = 0; k < 1; k++) {
-      add({
-        name: 'Jungle Canopy',
-        pos: [clampWorld(px + rf(-1.2, 1.2), 3), h + rf(-1, 1.4), clampWorld(pz + rf(-1.2, 1.2), 3)],
-        scale: [rf(3, 5), rf(2, 3), rf(3, 5)],
-        mesh: 'sphere',
-        color: C.jungleLeaf,
-        roughness: 0.95,
-        collider: 0
-      })
+    gltfContainers[id] = {
+      json: {
+        src: tree.src,
+        // Unlike the corner pyramid, these ship no dedicated collider mesh —
+        // collide against the visible geometry directly.
+        visibleMeshesCollisionMask: 3
+      }
     }
   }
 
-  // Ruin blocks for flavour
+  // Loose rocks for flavour (used to be grey "ruin block" box primitives).
+  // Non-collidable, same as the boxes they replaced — they scatter across
+  // the whole zone including maze corridors, and blocking those would trap
+  // players.
   for (let i = 0; i < 7; i++) {
-    add({
-      name: 'Jungle Ruin Block',
-      pos: [rf(x0 + 3, x0 + BLOCK - 3), rf(0.4, 1.2), rf(z0 + 3, z0 + BLOCK - 3)],
-      scale: [rf(1.5, 3), rf(0.8, 2.2), rf(1.5, 3)],
-      rot: yawQuat(rf(0, 360)),
-      color: C.jungleStone,
-      collider: 0
-    })
+    addRock(rf(x0 + 3, x0 + BLOCK - 3), rf(z0 + 3, z0 + BLOCK - 3), 0.05, rf(0.8, 2.2), false)
   }
+}
+
+/**
+ * assets/models/pipe.glb replaces the primitive cylinder "Pipe Run" props.
+ * Measured with its own baked node rotation applied (like the trees'
+ * translation, this model bakes a -90° X rotation into its single node, so
+ * ignoring it would measure the wrong axis as "length"): native length
+ * (world Y with that baked rotation applied) is 1.9852m, cross-section
+ * diameter 1.8398m, base sitting at minY = -0.0144 (negligible — base-
+ * anchored, same as the trees/mountains/pine). Ships its own
+ * "Cylinder_collider" node, but unlike the pyramid/mountains this needs an
+ * explicit `invisibleMeshesCollisionMask: 0` — the ORIGINAL primitive pipes
+ * were deliberately non-collidable (background piping you can walk through,
+ * not a hazard), and a model's own collider node defaults to collidable.
+ */
+const PIPE_MODEL_SRC = 'assets/models/pipe.glb'
+const PIPE_NATIVE_LENGTH = 1.9852
+const PIPE_NATIVE_DIAMETER = 1.8398
+if (!existsSync(resolve(ROOT, PIPE_MODEL_SRC))) {
+  throw new Error(`Missing ${PIPE_MODEL_SRC} — the Foundry's pipe runs need this model.`)
+}
+
+/**
+ * Place a pipe segment `length` metres long at `[px, py, pz]` (py = the end
+ * nearest the model's own base pivot), upright if `!horizontal`, laid on its
+ * side if `horizontal`. `diameterX`/`diameterZ` default to the old thin pipe
+ * width (~0.8m); pass larger, independent values for a fat vertical "pillar"
+ * use like the Silos below. `collidable` defaults to true (the model's own
+ * collider node collides by default) — pass false for background piping you
+ * should be able to walk through, matching what the thin pipe runs did.
+ */
+function addPipe(px, py, pz, length, horizontal, diameterX = 0.8, diameterZ = diameterX, collidable = true) {
+  const lengthScale = length / PIPE_NATIVE_LENGTH
+  const id = add({
+    name: 'Pipe Run',
+    pos: [px, py, pz],
+    scale: [diameterX / PIPE_NATIVE_DIAMETER, lengthScale, diameterZ / PIPE_NATIVE_DIAMETER],
+    rot: horizontal ? eulerQuat(0, 0, 90) : IDENTITY_ROT,
+    mesh: 'none',
+    collider: 0
+  })
+  gltfContainers[id] = collidable
+    ? { json: { src: PIPE_MODEL_SRC } }
+    : { json: { src: PIPE_MODEL_SRC, invisibleMeshesCollisionMask: 0 } }
+  return id
+}
+
+/**
+ * assets/models/platform_1.glb replaces the "Catwalk Platform" and "Moving
+ * Platform" primitives. Unlike platform_0 (used in the ice zone, pivoted at
+ * its TOP surface per the user), this one measures base-anchored: minY = 0
+ * exactly, footprint 2.5 x 2.5m, thickness 0.5m.
+ */
+const FOUNDRY_PLATFORM_MODEL_SRC = 'assets/models/platform_1.glb'
+const FOUNDRY_PLATFORM_NATIVE_WIDTH = 2.5
+const FOUNDRY_PLATFORM_NATIVE_THICKNESS = 0.5
+if (!existsSync(resolve(ROOT, FOUNDRY_PLATFORM_MODEL_SRC))) {
+  throw new Error(`Missing ${FOUNDRY_PLATFORM_MODEL_SRC} — the Foundry's catwalk/moving platforms need this model.`)
+}
+
+/**
+ * Place a foundry platform with its base at `baseY`, footprint scaled
+ * independently in X/Z (`widthX`/`widthZ`, so it can stay a non-square plate
+ * like the old catwalk tiles could), held to `thickness` metres tall
+ * regardless of footprint so it keeps reading as a thin plate rather than a
+ * block. Extra `add()` fields (rot, tween) merge in via `extra`.
+ */
+function addFoundryPlatform(px, baseY, pz, widthX, widthZ, thickness, extra = {}) {
+  const id = add({
+    name: 'Foundry Platform',
+    pos: [px, baseY, pz],
+    scale: [widthX / FOUNDRY_PLATFORM_NATIVE_WIDTH, thickness / FOUNDRY_PLATFORM_NATIVE_THICKNESS, widthZ / FOUNDRY_PLATFORM_NATIVE_WIDTH],
+    mesh: 'none',
+    collider: 0,
+    ...extra
+  })
+  gltfContainers[id] = { json: { src: FOUNDRY_PLATFORM_MODEL_SRC } }
+  return id
 }
 
 /* ================================================================== *
@@ -747,30 +874,11 @@ function buildWest() {
     y += rf(0.55, 1.15)
     const sx = rf(2.4, 4.2)
     const sz = rf(2.4, 4.2)
-    add({
-      name: 'Catwalk Platform',
-      pos: [px, y, pz],
-      scale: [sx, 0.4, sz],
-      rot: yawQuat(rf(0, 90)),
-      color: i % 5 === 0 ? C.indYellow : C.indSteel,
-      metallic: 0.7,
-      roughness: 0.4,
-      collider: 3
-    })
+    // Base-anchored model, so the platform's base sits at y - 0.2 to keep its
+    // 0.4m-thick top surface exactly where it was (y + 0.2, matching the
+    // addAnchor line right below, unchanged from the old centre-pivoted primitive).
+    addFoundryPlatform(px, y - 0.2, pz, sx, sz, 0.4, { rot: yawQuat(rf(0, 90)) })
     addAnchor('WEST', px, y + 0.2, pz)
-    if (i % 7 === 3) {
-      // hazard-striped guard rail
-      add({
-        name: 'Guard Rail',
-        pos: [px, y + 0.9, pz + sz / 2],
-        scale: [sx, 1.2, 0.12],
-        color: C.indYellow,
-        emissive: [0.5, 0.4, 0.05],
-        emissiveIntensity: 0.6,
-        metallic: 0.6,
-        collider: 0
-      })
-    }
   }
 
   // Moving platforms (Tween ping-pong) between tiers
@@ -779,22 +887,16 @@ function buildWest() {
     const pz = rf(z0 + 10, z0 + BLOCK - 10)
     const py = 3 + i * 2.6
     const dx = rf(6, 11)
-    add({
-      name: 'Moving Platform',
-      pos: [px, py, pz],
-      scale: [3.4, 0.4, 3.4],
-      color: C.indRust,
-      metallic: 0.6,
-      roughness: 0.5,
-      collider: 3,
+    const baseY = py - 0.2 // base-anchored model — see the Catwalk Platform loop above
+    addFoundryPlatform(px, baseY, pz, 3.4, 3.4, 0.4, {
       tween: {
         duration: 4200,
         easingFunction: 6, // EF_EASESINE
         mode: {
           $case: 'move',
           move: {
-            start: { x: r3(px), y: r3(py), z: r3(pz) },
-            end: { x: r3(Math.min(px + dx, x0 + BLOCK - 4)), y: r3(py), z: r3(pz) }
+            start: { x: r3(px), y: r3(baseY), z: r3(pz) },
+            end: { x: r3(Math.min(px + dx, x0 + BLOCK - 4)), y: r3(baseY), z: r3(pz) }
           }
         },
         playing: true
@@ -803,43 +905,28 @@ function buildWest() {
     })
   }
 
-  // Silos, pipes and stacks
+  // Silos ("big pillars") — same pipe.glb as the thin pipe runs below, just
+  // scaled to a much fatter, collidable cross-section instead of the thin
+  // non-collidable one. Base-anchored model, so pos.y is ground level (0.05)
+  // directly rather than the old primitive's centre-based h/2 + 0.05.
   for (let i = 0; i < 6; i++) {
     const px = rf(x0 + 5, x0 + BLOCK - 5)
     const pz = rf(z0 + 5, z0 + BLOCK - 5)
     const h = rf(9, 20)
-    add({
-      name: 'Silo',
-      pos: [px, h / 2 + 0.05, pz],
-      scale: [rf(3.5, 6), h, rf(3.5, 6)],
-      mesh: 'cylinder',
-      radiusTop: 0.5,
-      radiusBottom: 0.5,
-      color: i % 3 === 0 ? C.indRust : C.indSteel,
-      metallic: 0.75,
-      roughness: 0.45,
-      collider: 3
-    })
+    const diaX = rf(3.5, 6)
+    const diaZ = rf(3.5, 6)
+    addPipe(px, 0.05, pz, h, false, diaX, diaZ)
     addAnchor('WEST', px, h + 0.1, pz)
   }
+  // Thin background pipe runs — collidable, using the model's own collider
+  // (per explicit request; the primitive version these replaced had
+  // collider: 0, but that's no longer the intent).
   for (let i = 0; i < 7; i++) {
     const px = rf(x0 + 4, x0 + BLOCK - 4)
     const pz = rf(z0 + 4, z0 + BLOCK - 4)
     const len = rf(8, 22)
     const horizontal = rnd() < 0.5
-    add({
-      name: 'Pipe Run',
-      pos: [px, rf(2, 14), pz],
-      scale: horizontal ? [len, 1, 1] : [1, 1, len],
-      rot: eulerQuat(0, 0, 90),
-      mesh: 'cylinder',
-      radiusTop: 0.4,
-      radiusBottom: 0.4,
-      color: C.indPipe,
-      metallic: 0.8,
-      roughness: 0.35,
-      collider: 0
-    })
+    addPipe(px, rf(2, 14), pz, len, horizontal)
   }
   // Crate stacks (climbable)
   for (let i = 0; i < 5; i++) {
@@ -872,7 +959,7 @@ function buildWest() {
  * above covered its ENTIRE footprint with no opening anywhere, regardless of
  * where the ramp below it actually arrived — a ramp to nowhere.
  */
-function addFloorRing(labelPrefix, y, color, outer, hole) {
+function addFloorRing(labelPrefix, y, textureSrc, outer, hole) {
   const pieces = [
     // West/east strips run the full depth; north/south only span the gap
     // BETWEEN them, so the 4 pieces tile the ring without corner overlap.
@@ -889,15 +976,122 @@ function addFloorRing(labelPrefix, y, color, outer, hole) {
       name: `${labelPrefix} ${p.name}`,
       pos: [(p.x0 + p.x1) / 2, y, (p.z0 + p.z1) / 2],
       scale: [sx, 0.5, sz],
-      color,
+      // White, not the old sandstone tint — a colour tint here would multiply
+      // into the texture and colour-cast it. lift's emissive ambient boost
+      // (mobile has no dynamic lights) follows the same colour, so it's now a
+      // neutral white glow instead of a warm sandstone one.
+      color: [1, 1, 1],
+      textureSrc,
+      // Each ring piece already has its own true sx/sz here (unlike the wall
+      // runs, which only have one dimension to work with per shared UV
+      // transform) — so this repeats correctly on every piece, not just an
+      // approximation of the whole floor's footprint.
+      textureTiling: tileRepeat(sx, sz),
       lift: INTERIOR_LIFT,
       collider: 3
     })
   }
 }
 
+/**
+ * assets/models/pyramid.glb replaces the ENTIRE old multi-storey maze tower
+ * (walls, floor rings, ramps, stepped roof, capstone — see buildSouth()
+ * below) with a single solid landmark. Per explicit user decision: the
+ * interior gameplay (the tower's walkable maze + its tile-spawn anchors)
+ * is being redesigned separately later, not rebuilt here — this pass is
+ * exterior-only. `TILE_ANCHORS.SOUTH` is empty until that happens;
+ * src/host.ts already skips a zone with no anchors during tile spawn/
+ * reclaim (`if (!TILE_ANCHORS[zone].length) continue`), so the game runs
+ * fine with the desert temporarily anchor-less, it just won't spawn tiles
+ * there yet.
+ *
+ * The model measures suspiciously close to the OLD building's exact
+ * footprint/height already (58 x 41 x 58, vs the old 58 x 58 span and
+ * ~40.9m to the capstone) — SOUTH_PYRAMID_SCALE is 1 as a result; adjust it
+ * here if that changes.
+ *
+ * Its pivot is NOT centred and NOT base-anchored (measured via the full
+ * glTF node transform): local bounds are X[-29.14, 28.86], Y[-8.62, 32.38],
+ * Z[-50.01, 7.99]. So placement needs 2 corrections: lower `pos.y` by
+ * |minY| to put the base on the ground, and shift `pos.z` by the
+ * geometric-centre offset (-21.01) so the pyramid's actual middle lands on
+ * the zone centre rather than its pivot.
+ *
+ * No dedicated "*_collider" node (single mesh, single primitive, unlike the
+ * corner pyramid/mountains/gates) — needs an explicit collision mask, same
+ * as the trees/rocks/pines.
+ */
+const SOUTH_PYRAMID_MODEL_SRC = 'assets/models/pyramid.glb'
+const SOUTH_PYRAMID_SCALE = 1
+const SOUTH_PYRAMID_MIN_Y = -8.6222
+const SOUTH_PYRAMID_Z_CENTRE_OFFSET = -21.0126
+if (!existsSync(resolve(ROOT, SOUTH_PYRAMID_MODEL_SRC))) {
+  throw new Error(`Missing ${SOUTH_PYRAMID_MODEL_SRC} — the South zone's landmark needs this model.`)
+}
+
+/**
+ * Real floor points for tile-spawn anchors inside the carved pyramid — the
+ * bounding-box-with-margin guess this replaces put anchors inside walls
+ * (nothing visible/reachable) and right up against a ceiling (one tile
+ * poking half through it). This time the mesh's actual triangles were read:
+ * for every triangle in the model, compute its face normal, keep only the
+ * ones pointing mostly straight up (normal.y > 0.7 — genuine floors, not
+ * walls or the sloped ceiling), and cluster by height. That surfaced one
+ * dominant, contiguous floor — these are ITS 42 triangle centroids (world
+ * X/Z, already carrying `pyramidX`/`pyramidZ` baked in isn't right, they're
+ * offsets from the pyramid's pivot the same way SOUTH_PYRAMID_MIN_Y is: add
+ * pyramidX/pyramidZ at placement time, same as everywhere else in this file).
+ * All 42 sit within 0.05m of local Y -8.59 (world ~0.08m — essentially
+ * ground level, so this is the entrance-floor room), with ~7.4m of clearance
+ * to the nearest ceiling above it — comfortably safe for addAnchor's own
+ * +1.0m tile-height lift.
+ *
+ * There's a second floor cluster higher up, at local Y ~1.59 — the upper
+ * gallery reached by the ramp that spurs off to the left of the entrance
+ * (per the actual carved layout: entrance -> left goes up a ramp to this
+ * upper floor, right spirals inward on the ground floor). It's smaller (12
+ * triangle centroids) and more fragmented than the ground floor, but is a
+ * single connected component in its own right, so it's included as its own
+ * anchor cluster below.
+ */
+const SOUTH_PYRAMID_FLOOR_Y = -8.59
+const SOUTH_PYRAMID_FLOOR_POINTS = [
+  [1.15, 2.21], [-0.77, -1.38], [0.51, 2.21], [-0.14, 2.21], [0.5, -6.6], [-0.77, -8.23],
+  [11.1, -6.6], [14.33, -8.23], [3.81, -6.6], [5.84, -8.23], [-3.74, -8.23], [-5.43, -6.6],
+  [-9.11, -8.23], [-11.1, -6.6], [-21.15, -8.23], [-23.12, -6.6], [-15.11, -8.23], [-17.14, -6.6],
+  [19.42, -6.6], [21.28, -8.23], [21.28, -19.51], [19.42, -29.16], [21.28, -40.58], [19.42, -42.35],
+  [-21.96, -42.35], [-24.05, -40.58], [5.09, -42.35], [-7.39, -40.58], [-24.05, -37.58], [-21.96, -36.34],
+  [-24.05, -33.15], [-21.96, -31.18], [-10.44, -31.18], [-1.02, -33.15], [11.18, -26.35], [13.95, -23.49],
+  [11.18, -31.18], [13.95, -33.15], [11.18, -17.92], [13.95, -15.21], [3.15, -17.92], [-2.11, -15.21]
+]
+
+// Upper gallery — reached via the ramp left of the entrance. Real triangle
+// centroids of the connected upper-floor component (see SOUTH_PYRAMID_FLOOR_Y
+// comment above for how these clusters were found).
+const SOUTH_PYRAMID_UPPER_FLOOR_Y = 1.59
+const SOUTH_PYRAMID_UPPER_FLOOR_POINTS = [
+  [-14.12, -35.46], [-2.56, -37.1], [7.32, -37.1], [7.32, -22.8], [7.32, -11.2], [-9.82, -11.2],
+  [-3.79, -14.24], [4.78, -14.24], [4.78, -28.31], [4.78, -35.46], [-7.35, -35.46], [-16.1, -37.1]
+]
+
+// Exterior entrance-roof terrace — the flat portico roof directly above the
+// entrance colonnade. There are actually TWO stacked quads here with nearly
+// identical XZ footprint (x[-8.03,7.76], z roughly [-3,8]), 2.3m apart in Y —
+// the lower one (y=2.79) turned out to be a hidden step buried inside the
+// solid mass, not the surface the player actually stands on (confirmed by
+// the first attempt spawning tiles that read as "buried"). This is the
+// UPPER of the two (verts span x[-8.03,7.76] z[-4.20,7.99] at this Y), which
+// is the real walkable roof. Points are a 4x3 grid inset 1.6m from the
+// quad's true edges (not triangle centroids, since it's a simple flat
+// rectangle rather than a fragmented cluster).
+const SOUTH_PYRAMID_ENTRANCE_ROOF_Y = 5.07
+const SOUTH_PYRAMID_ENTRANCE_ROOF_POINTS = [
+  [-6.43, -2.6], [-6.43, 1.9], [-6.43, 6.39], [-2.23, -2.6], [-2.23, 1.9], [-2.23, 6.39],
+  [1.96, -2.6], [1.96, 1.9], [1.96, 6.39], [6.16, -2.6], [6.16, 1.9], [6.16, 6.39]
+]
+
 /* ================================================================== *
- * SOUTH — Egyptian multi-storey maze tower
+ * SOUTH — Egyptian desert, single pyramid landmark
  * ================================================================== */
 function buildSouth() {
   const { x0, z0 } = ZONES.SOUTH
@@ -905,200 +1099,266 @@ function buildSouth() {
   const cz = z0 + BLOCK / 2
   slab('Desert Sand', cx, cz, BLOCK, BLOCK, 0.05, C.sand, 0.5)
 
-  const FLOORS = 4
-  const FLOOR_H = 5.2
-  const INSET = 3 // tower footprint inset from the block edge
-  const span = BLOCK - INSET * 2 // 58
-  // Same reasoning as the jungle maze: this grid gets rebuilt on all 4
-  // floors, so its wall-segment count is the single biggest chunk of the
-  // scene's material budget. 9x9 still reads as a proper tomb maze per floor.
-  const cols = 3
-  const rows = 3
+  const pyramidX = cx
+  const pyramidY = 0.05 - SOUTH_PYRAMID_MIN_Y * SOUTH_PYRAMID_SCALE
+  const pyramidZ = cz - SOUTH_PYRAMID_Z_CENTRE_OFFSET * SOUTH_PYRAMID_SCALE
 
-  // The shaft (sc, sr — grid cell coords) that THIS floor's ramp climbs up
-  // through, handed forward so the NEXT floor's slab knows where to leave a
-  // hole open for it to arrive. ox/oz/step are floor-invariant (cols/rows
-  // never change between storeys), so reusing the current iteration's copies
-  // against a shaft computed last iteration is exact, not an approximation.
-  let prevShaft = null
-
-  for (let f = 0; f < FLOORS; f++) {
-    const baseY = 0.05 + f * FLOOR_H
-
-    const { wall, W, H } = generateMaze(cols, rows)
-    braidMaze(wall, W, H, 0.2)
-    const step = span / W
-    const ox = x0 + INSET
-    const oz = z0 + INSET
-    const wallH = FLOOR_H - 0.6
-
-    // Storey slab (skip ground floor — the sand already covers it). Built
-    // AFTER ox/oz/step above so it can cut the hole the previous floor's ramp
-    // needs to arrive through — see addFloorRing.
-    if (f > 0) {
-      const outer = { x0: ox, x1: ox + span, z0: oz, z1: oz + span }
-      const hole = {
-        x0: ox + prevShaft.sc * step,
-        x1: ox + (prevShaft.sc + 3) * step,
-        z0: oz + prevShaft.sr * step,
-        z1: oz + (prevShaft.sr + 3) * step
-      }
-      addFloorRing(`Tower Floor ${f}`, baseY - 0.25, C.sandstoneDark, outer, hole)
-    }
-
-    // Entrance on the north face (facing the plaza) for the ground floor
-    if (f === 0) wall[H - 1][Math.floor(W / 2)] = false
-
-    // Stair shaft: clear a 3x3 patch of wall cells and build a ramp up
-    const sc = ri(2, W - 5)
-    const sr = ri(2, H - 5)
-    for (let r = sr; r < sr + 3; r++) for (let c = sc; c < sc + 3; c++) wall[r][c] = false
-    prevShaft = { sc, sr }
-
-    for (const run of mergeWallRuns(wall, W, H)) {
-      const lenC = run.c1 - run.c0 + 1
-      const lenR = run.r1 - run.r0 + 1
-      add({
-        name: `Tomb Wall F${f}`,
-        pos: [
-          ox + (run.c0 + lenC / 2) * step,
-          baseY + wallH / 2,
-          oz + (run.r0 + lenR / 2) * step
-        ],
-        scale: [lenC * step, wallH, lenR * step],
-        color: rnd() < 0.15 ? C.sandstoneDark : C.sandstone,
-        roughness: 0.9,
-        lift: INTERIOR_LIFT,
-        collider: 3
-      })
-    }
-
-    // Ramp to the next storey
-    if (f < FLOORS - 1) {
-      const rx = ox + (sc + 1.5) * step
-      const rz = oz + (sr + 1.5) * step
-      const rampLen = 7.5
-      const pitch = -Math.atan2(FLOOR_H, rampLen) * (180 / Math.PI)
-      add({
-        name: `Tomb Ramp F${f}`,
-        pos: [rx, baseY + FLOOR_H / 2, rz],
-        scale: [3.2, 0.35, rampLen + 1],
-        rot: eulerQuat(pitch, 0, 0),
-        color: C.sandstoneDark,
-        collider: 3
-      })
-      add({
-        name: `Ramp Torch F${f}`,
-        pos: [rx + 2.2, baseY + 1.8, rz],
-        scale: [0.35, 1.2, 0.35],
-        color: C.egyptGold,
-        emissive: [1, 0.55, 0.1],
-        emissiveIntensity: 3,
-        collider: 0,
-        light: { color: [1, 0.72, 0.4], intensity: 2600, range: 16 }
-      })
-    }
-
-    // Tile anchors on every open passage cell of this storey, plus a scattering
-    // of braziers so the corridors are actually navigable.
-    const storeyCells = []
-    for (let r = 1; r < H; r += 2) {
-      for (let c = 1; c < W; c += 2) {
-        if (wall[r][c]) continue
-        const ax = ox + (c + 0.5) * step
-        const az = oz + (r + 0.5) * step
-        addAnchor('SOUTH', ax, baseY, az)
-        storeyCells.push([ax, az])
-      }
-    }
-    // The renderer only draws the handful of lights nearest the player, so
-    // spreading several per storey costs little and removes the dead spots.
-    const braziers = 3
-    for (let b = 0; b < braziers; b++) {
-      const cell = storeyCells[Math.floor((b + 0.5) * (storeyCells.length / braziers))]
-      if (!cell) continue
-      add({
-        name: `Tomb Brazier F${f}`,
-        pos: [cell[0], baseY + 0.55, cell[1]],
-        scale: [0.7, 1.1, 0.7],
-        mesh: 'cylinder',
-        radiusTop: 0.45,
-        radiusBottom: 0.2,
-        color: C.egyptGold,
-        emissive: [1, 0.6, 0.15],
-        emissiveIntensity: 2.6,
-        metallic: 0.7,
-        roughness: 0.3,
-        collider: 3,
-        light: { color: [1, 0.78, 0.5], intensity: 3200, range: 18 }
-      })
-    }
-  }
-
-  // Outer shell walls with an open north face
-  const topY = 0.05 + FLOORS * FLOOR_H
-  const shell = [
-    [cx, z0 + INSET, span, 0.8],
-    [x0 + INSET, cz, 0.8, span],
-    [x0 + BLOCK - INSET, cz, 0.8, span]
-  ]
-  for (const [px, pz, sx, sz] of shell) {
-    add({
-      name: 'Tomb Outer Wall',
-      pos: [px, topY / 2, pz],
-      scale: [sx, topY, sz],
-      color: C.sandstone,
-      roughness: 0.9,
-      collider: 3
-    })
-  }
-
-  // Stepped pyramid roof
-  for (let step2 = 0; step2 < 7; step2++) {
-    const w = span - step2 * 7
-    if (w <= 4) break
-    slab(`Pyramid Cap ${step2}`, cx, cz, w, w, topY + (step2 + 1) * 2.4, C.sandstone, 2.4)
-  }
-  add({
-    name: 'Pyramid Capstone',
-    pos: [cx, topY + 18.5, cz],
-    scale: [3, 3, 3],
-    color: C.egyptGold,
-    emissive: [0.9, 0.7, 0.2],
-    emissiveIntensity: 2,
-    metallic: 0.9,
-    roughness: 0.2,
-    collider: 3
+  const id = add({
+    name: 'Pyramid',
+    pos: [pyramidX, pyramidY, pyramidZ],
+    scale: [SOUTH_PYRAMID_SCALE, SOUTH_PYRAMID_SCALE, SOUTH_PYRAMID_SCALE],
+    rot: IDENTITY_ROT,
+    mesh: 'none',
+    collider: 0
   })
-  addAnchor('SOUTH', cx, topY + 20, cz)
+  gltfContainers[id] = { json: { src: SOUTH_PYRAMID_MODEL_SRC, visibleMeshesCollisionMask: 3 } }
 
-  // Obelisks and palms outside the tower
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2
-    const px = cx + Math.cos(a) * 29
-    const pz = cz + Math.sin(a) * 29
-    if (px < x0 + 1 || px > x0 + BLOCK - 1 || pz < z0 + 1 || pz > z0 + BLOCK - 1) continue
-    const h = rf(8, 12)
-    add({
-      name: 'Obelisk',
-      pos: [px, h / 2 + 0.05, pz],
-      scale: [1.4, h, 1.4],
-      color: C.sandstoneDark,
-      collider: 3
-    })
-    add({
-      name: 'Obelisk Tip',
-      pos: [px, h + 0.85, pz],
-      scale: [1.5, 1.6, 1.5],
-      mesh: 'cylinder',
-      radiusTop: 0,
-      radiusBottom: 0.5,
-      color: C.egyptGold,
-      metallic: 0.85,
-      roughness: 0.25,
-      collider: 0
+  // Tile-spawn anchors — real floor points, see SOUTH_PYRAMID_FLOOR_POINTS above.
+  const floorY = pyramidY + SOUTH_PYRAMID_FLOOR_Y * SOUTH_PYRAMID_SCALE
+  for (const [lx, lz] of SOUTH_PYRAMID_FLOOR_POINTS) {
+    addAnchor('SOUTH', pyramidX + lx * SOUTH_PYRAMID_SCALE, floorY, pyramidZ + lz * SOUTH_PYRAMID_SCALE)
+  }
+
+  // Upper-gallery anchors — reached via the ramp left of the entrance.
+  const upperFloorY = pyramidY + SOUTH_PYRAMID_UPPER_FLOOR_Y * SOUTH_PYRAMID_SCALE
+  for (const [lx, lz] of SOUTH_PYRAMID_UPPER_FLOOR_POINTS) {
+    addAnchor('SOUTH', pyramidX + lx * SOUTH_PYRAMID_SCALE, upperFloorY, pyramidZ + lz * SOUTH_PYRAMID_SCALE)
+  }
+
+  // Entrance-roof terrace anchors — exterior, atop the entrance colonnade.
+  const entranceRoofY = pyramidY + SOUTH_PYRAMID_ENTRANCE_ROOF_Y * SOUTH_PYRAMID_SCALE
+  for (const [lx, lz] of SOUTH_PYRAMID_ENTRANCE_ROOF_POINTS) {
+    addAnchor('SOUTH', pyramidX + lx * SOUTH_PYRAMID_SCALE, entranceRoofY, pyramidZ + lz * SOUTH_PYRAMID_SCALE)
+  }
+}
+
+/**
+ * The 3 mountain GLBs (assets/models/mountain_0/1/2.glb), replacing the
+ * primitive cone mountains in both the north backdrop (buildNorth) and the
+ * four corner massifs (buildCorners). `nativeHeight` was measured by walking
+ * each file's full node hierarchy (rotation + the ~100x scale baked into
+ * every node + translation) down to the visible mesh's accessor bounds —
+ * these aren't flat local-space numbers like the trees, the GLBs bake in
+ * their own large scale and a -90° X rotation from the Blender export.
+ *
+ * All 3 are pivoted at their own base (measured minY was -0.04, -0.01, -0.04
+ * — negligible), so, like the trees, placement is just ground level.
+ *
+ * Each model already ships its own baked "*_collider" node (same convention
+ * as the corner pyramid) — see the placement code below for why no explicit
+ * collision mask is set. mountain_1/mountain_2 also already bake in their own
+ * snow-cap material, which is why the old procedural white "Snowcap" cone
+ * for tall corner mountains is gone: it would now be redundant.
+ *
+ * >>> ADJUST MOUNTAIN SIZE HERE <<< — see `targetHeight` at each of the two
+ * call sites below (buildNorth's backdrop wall and buildCorners' massifs
+ * have separate ranges, same as the primitives they replace did).
+ */
+const MOUNTAIN_MODELS = [
+  { src: 'assets/models/mountain_0.glb', nativeHeight: 1.37, nativeWidth: 1.496, nativeDepth: 1.117 },
+  { src: 'assets/models/mountain_1.glb', nativeHeight: 1.911, nativeWidth: 1.079, nativeDepth: 1.103 },
+  { src: 'assets/models/mountain_2.glb', nativeHeight: 2.445, nativeWidth: 3.575, nativeDepth: 2.463 }
+]
+for (const m of MOUNTAIN_MODELS) {
+  if (!existsSync(resolve(ROOT, m.src))) {
+    throw new Error(`Missing ${m.src} — the north backdrop and corner mountains need this model.`)
+  }
+}
+
+// Zone rectangles with real built structures a mountain's rotated footprint
+// must not spill into. NORTH (ice) is deliberately excluded — that zone is
+// itself a mountain backdrop, so overlap there isn't a visual clash.
+const MOUNTAIN_CLASH_RECTS = {
+  'CENTER (pyramid)': { x0: 64, x1: 128, z0: 64, z1: 128 },
+  'EAST (jungle maze)': { x0: 128, x1: 192, z0: 64, z1: 128 },
+  'WEST (Foundry)': { x0: 0, x1: 64, z0: 64, z1: 128 },
+  'SOUTH (desert tomb)': { x0: 64, x1: 128, z0: 0, z1: 64 }
+}
+
+/** Rotated-footprint half-extents for a mountain at `scale`/`yaw` (degrees). */
+function mountainFootprint(mountain, px, pz, scale, yaw) {
+  const rad = (yaw * Math.PI) / 180
+  const halfW = (Math.abs(mountain.nativeWidth * Math.cos(rad)) + Math.abs(mountain.nativeDepth * Math.sin(rad))) * scale * 0.5
+  const halfD = (Math.abs(mountain.nativeWidth * Math.sin(rad)) + Math.abs(mountain.nativeDepth * Math.cos(rad))) * scale * 0.5
+  return { xMin: px - halfW, xMax: px + halfW, zMin: pz - halfD, zMax: pz + halfD }
+}
+
+// Buffer added around each clash rect before testing. A mountain's real
+// silhouette is an irregular natural shape, not a clean box, so clearing the
+// AABB by a hair (this happened before adding the margin: some corner
+// massifs sat as close as 0.6m from the actual wall) still reads as visually
+// "eating into" the wall. The margin forces genuine breathing room.
+const MOUNTAIN_CLASH_MARGIN = 4
+function footprintClashes(fp) {
+  return Object.values(MOUNTAIN_CLASH_RECTS).some(
+    r =>
+      fp.xMin < r.x1 + MOUNTAIN_CLASH_MARGIN &&
+      fp.xMax > r.x0 - MOUNTAIN_CLASH_MARGIN &&
+      fp.zMin < r.z1 + MOUNTAIN_CLASH_MARGIN &&
+      fp.zMax > r.z0 - MOUNTAIN_CLASH_MARGIN
+  )
+}
+
+const DEBUG_MOUNTAINS = process.env.DEBUG_MOUNTAINS === '1'
+const mountainDebugLog = []
+
+/**
+ * Place one of the MOUNTAIN_MODELS at `[px, pz]`, scaled to `targetHeight`
+ * metres tall. Self-healing: if the rotated footprint would spill within
+ * MOUNTAIN_CLASH_MARGIN metres of a neighbouring zone's built structures
+ * (see MOUNTAIN_CLASH_RECTS), the scale is shrunk in 15% steps (down to a
+ * 0.1x floor, so it never fully vanishes) until it clears every zone with
+ * margin to spare. This runs automatically on every generation — with the
+ * fixed SEED, the same clash always resolves the same way, and any future
+ * edit that shifts the RNG stream just re-resolves against whichever
+ * mountain ends up in the way, with no hand-maintained index table to keep
+ * in sync.
+ */
+function addMountain(px, pz, targetHeight, label, i) {
+  const mountain = pick(MOUNTAIN_MODELS)
+  let scale = targetHeight / mountain.nativeHeight
+  const yaw = rf(0, 360)
+  let shrunk = false
+  let fp = mountainFootprint(mountain, px, pz, scale, yaw)
+  while (footprintClashes(fp) && scale > (targetHeight / mountain.nativeHeight) * 0.1) {
+    scale *= 0.85
+    shrunk = true
+    fp = mountainFootprint(mountain, px, pz, scale, yaw)
+  }
+  const id = add({
+    name: 'Mountain',
+    pos: [px, 0.05, pz], // all 3 models are pivoted at their own base — see MOUNTAIN_MODELS
+    scale: [scale, scale, scale],
+    rot: yawQuat(yaw),
+    mesh: 'none', // geometry comes from the glTF below, not a primitive
+    collider: 0
+  })
+  // No explicit collision masks — PBGltfContainer's own defaults already do
+  // the right thing here (see the corner pyramid, which uses the same
+  // model-ships-its-own-collider convention): the model's baked
+  // "*_collider" node is invisible-but-solid by default, the visible
+  // geometry isn't, and setting masks explicitly would just restate that.
+  gltfContainers[id] = { json: { src: mountain.src } }
+  if (DEBUG_MOUNTAINS) {
+    mountainDebugLog.push({
+      key: `${label}#${i}`,
+      id,
+      px: +px.toFixed(1),
+      pz: +pz.toFixed(1),
+      scale: +scale.toFixed(2),
+      src: mountain.src.split('/').pop(),
+      xMin: +fp.xMin.toFixed(1),
+      xMax: +fp.xMax.toFixed(1),
+      zMin: +fp.zMin.toFixed(1),
+      zMax: +fp.zMax.toFixed(1),
+      overridden: shrunk
     })
   }
+  return id
+}
+
+/**
+ * Loose boulder/rock dressing. Unlike the trees/pyramid/mountains, these two
+ * models' pivot is NOT at their base — their own baked node transform floats
+ * the mesh above the origin (measured via full glTF node-chain transforms,
+ * min Y in each model's own post-transform space): rock_0 = 0.1166,
+ * rock_1 = 0.8454. Ignoring that (the same mistake made once already for the
+ * tree models, before it turned out those genuinely were base-anchored) would
+ * float these noticeably above the ground, so `addRock` compensates by
+ * lowering `pos.y` by `nativeMinY * scale`.
+ */
+const ROCK_MODELS = [
+  { src: 'assets/models/rock_0.glb', nativeHeight: 0.4235, nativeMinY: 0.1166 },
+  { src: 'assets/models/rock_1.glb', nativeHeight: 0.723, nativeMinY: 0.8454 }
+]
+for (const m of ROCK_MODELS) {
+  if (!existsSync(resolve(ROOT, m.src))) {
+    throw new Error(`Missing ${m.src} — boulder/rock dressing needs this model.`)
+  }
+}
+
+/**
+ * Place one of the ROCK_MODELS at `[px, pz]`, its base sitting at `groundY`,
+ * scaled to `targetHeight` metres tall. `collidable` defaults to true (loose
+ * boulders you should bump into); pass false for rocks scattered through
+ * tight spaces (e.g. the jungle maze corridors) where blocking movement
+ * would be a problem, matching what the box primitives they replaced did.
+ */
+function addRock(px, pz, groundY, targetHeight, collidable = true) {
+  const rock = pick(ROCK_MODELS)
+  const scale = targetHeight / rock.nativeHeight
+  const id = add({
+    name: 'Rock',
+    pos: [px, groundY - rock.nativeMinY * scale, pz],
+    scale: [scale, scale, scale],
+    rot: yawQuat(rf(0, 360)),
+    mesh: 'none', // geometry comes from the glTF below, not a primitive
+    collider: 0
+  })
+  // No dedicated "*_collider" node in either model (single mesh, single
+  // primitive) — unlike the pyramid/mountains, these DO need an explicit
+  // collision mask, same as the jungle trees.
+  gltfContainers[id] = { json: { src: rock.src, visibleMeshesCollisionMask: collidable ? 3 : 0 } }
+  return id
+}
+
+/**
+ * assets/models/pine.glb replaces the old "Ice Spike" primitive — a blue
+ * cylinder-cone (radiusTop 0) in the ice zone. Despite the cone shape and
+ * blue tint, that primitive was frozen-icicle dressing, not a tree; swapping
+ * it for a pine changes the zone's read from "icy spires" to "snow-dusted
+ * pines," which is what was asked for. Base-anchored like the trees/mountains
+ * (measured minY = -0.0178, negligible), no dedicated collider node so it
+ * needs an explicit mask like the jungle trees/rocks.
+ */
+const PINE_MODEL = { src: 'assets/models/pine.glb', nativeHeight: 2.4938, nativeMinY: -0.0178 }
+if (!existsSync(resolve(ROOT, PINE_MODEL.src))) {
+  throw new Error(`Missing ${PINE_MODEL.src} — the ice zone's pines need this model.`)
+}
+
+/** Place a pine at `[px, pz]`, its base sitting at `groundY`, scaled to `targetHeight` metres tall. */
+function addPine(px, pz, groundY, targetHeight) {
+  const scale = targetHeight / PINE_MODEL.nativeHeight
+  const id = add({
+    name: 'Pine',
+    pos: [px, groundY - PINE_MODEL.nativeMinY * scale, pz],
+    scale: [scale, scale, scale],
+    rot: yawQuat(rf(0, 360)),
+    mesh: 'none',
+    collider: 0
+  })
+  gltfContainers[id] = { json: { src: PINE_MODEL.src, visibleMeshesCollisionMask: 3 } }
+  return id
+}
+
+/**
+ * assets/models/platform_0.glb replaces both jump-platform primitives in the
+ * ice zone ("Ice Floe" and "Frozen Disc"). Its own pivot is at the TOP
+ * SURFACE centre (confirmed both by the user and by measuring: the visible
+ * mesh's maxY is ~0.003, essentially 0), unlike every other GLB swapped in
+ * so far — so `pos.y` here is the walkable surface height directly, no base
+ * offset math needed. It ships a dedicated "Island01_collider" node, so —
+ * same as the pyramid/mountains — no explicit collision mask is set.
+ */
+const PLATFORM_MODEL = { src: 'assets/models/platform_0.glb', nativeWidth: 0.8871, nativeDepth: 0.9085 }
+if (!existsSync(resolve(ROOT, PLATFORM_MODEL.src))) {
+  throw new Error(`Missing ${PLATFORM_MODEL.src} — the ice zone's jump platforms need this model.`)
+}
+
+/** Place a platform at `[px, topY, pz]` (topY = its walkable top surface), footprint sized to targetWidth metres. Extra `add()` fields (e.g. tween) merge in via `extra`. */
+function addPlatform(px, topY, pz, targetWidth, extra = {}) {
+  const scale = targetWidth / PLATFORM_MODEL.nativeWidth
+  const id = add({
+    name: 'Ice Platform',
+    pos: [px, topY, pz],
+    scale: [scale, scale, scale],
+    rot: yawQuat(rf(0, 360)),
+    mesh: 'none',
+    collider: 0,
+    ...extra
+  })
+  gltfContainers[id] = { json: { src: PLATFORM_MODEL.src } }
+  return id
 }
 
 /* ================================================================== *
@@ -1113,18 +1373,7 @@ function buildNorth() {
   // Backdrop mountain wall along the far (north) edge
   for (let i = 0; i < 9; i++) {
     const px = x0 + 3 + i * ((BLOCK - 6) / 8)
-    const h = rf(24, 44)
-    add({
-      name: 'Snow Peak',
-      pos: [px, h / 2 + 0.05, rf(z0 + BLOCK - 9, z0 + BLOCK - 3)],
-      scale: [rf(10, 18), h, rf(10, 18)],
-      mesh: 'cylinder',
-      radiusTop: 0,
-      radiusBottom: 0.5,
-      color: i % 2 ? C.rock : C.snow,
-      roughness: 0.95,
-      collider: 3
-    })
+    addMountain(px, rf(z0 + BLOCK - 9, z0 + BLOCK - 3), rf(24, 44), 'NorthBackdrop', i)
   }
 
   // Ascending ice-floe course climbing toward the peaks
@@ -1138,18 +1387,7 @@ function buildNorth() {
     px = Math.min(Math.max(px, x0 + 5), x0 + BLOCK - 5)
     pz = Math.min(Math.max(pz, z0 + 4), z0 + BLOCK - 14)
     y += rf(0.7, 1.5)
-    const s = rf(2.6, 4.6)
-    add({
-      name: 'Ice Floe',
-      pos: [px, y, pz],
-      scale: [s, 0.45, s],
-      rot: yawQuat(rf(0, 90)),
-      color: i % 4 === 0 ? C.iceDeep : C.ice,
-      metallic: 0.15,
-      roughness: 0.12,
-      alpha: 0.92,
-      collider: 3
-    })
+    addPlatform(px, y, pz, rf(2.6, 4.6))
     addAnchor('NORTH', px, y + 0.25, pz)
   }
 
@@ -1158,17 +1396,7 @@ function buildNorth() {
     const dx = rf(x0 + 8, x0 + BLOCK - 8)
     const dz = rf(z0 + 6, z0 + BLOCK - 18)
     const dy = 4 + i * 3.2
-    add({
-      name: 'Frozen Disc',
-      pos: [dx, dy, dz],
-      scale: [5, 0.4, 5],
-      mesh: 'cylinder',
-      radiusTop: 0.5,
-      radiusBottom: 0.5,
-      color: C.ice,
-      metallic: 0.2,
-      roughness: 0.1,
-      collider: 3,
+    addPlatform(dx, dy, dz, 5, {
       tween: {
         duration: 9000,
         easingFunction: 0,
@@ -1183,35 +1411,12 @@ function buildNorth() {
     addAnchor('NORTH', dx, dy + 0.3, dz)
   }
 
-  // Ice spikes & boulders
+  // Pines & boulders
   for (let i = 0; i < 7; i++) {
-    const sx = rf(x0 + 3, x0 + BLOCK - 3)
-    const sz = rf(z0 + 3, z0 + BLOCK - 12)
-    const h = rf(3, 9)
-    add({
-      name: 'Ice Spike',
-      pos: [sx, h / 2 + 0.05, sz],
-      scale: [rf(1.2, 2.6), h, rf(1.2, 2.6)],
-      mesh: 'cylinder',
-      radiusTop: 0,
-      radiusBottom: 0.5,
-      color: C.iceDeep,
-      metallic: 0.2,
-      roughness: 0.12,
-      alpha: 0.9,
-      collider: 3
-    })
+    addPine(rf(x0 + 3, x0 + BLOCK - 3), rf(z0 + 3, z0 + BLOCK - 12), 0.05, rf(3, 9))
   }
   for (let i = 0; i < 7; i++) {
-    add({
-      name: 'Snow Boulder',
-      pos: [rf(x0 + 3, x0 + BLOCK - 3), rf(0.6, 1.6), rf(z0 + 3, z0 + BLOCK - 12)],
-      scale: [rf(2, 4), rf(1.6, 3), rf(2, 4)],
-      mesh: 'sphere',
-      color: rnd() < 0.5 ? C.snow : C.rockDark,
-      roughness: 0.95,
-      collider: 3
-    })
+    addRock(rf(x0 + 3, x0 + BLOCK - 3), rf(z0 + 3, z0 + BLOCK - 12), 0.05, rf(1.6, 3))
   }
 }
 
@@ -1225,50 +1430,19 @@ function buildCorners() {
     const cz = z0 + BLOCK / 2
     slab(`${name} Ground`, cx, cz, BLOCK, BLOCK, 0.05, C.rockDark, 0.5)
 
-    // Layered mountain massif — pure backdrop (no anchors/gameplay here), so
-    // this is one of the cheapest places to cut material count.
+    // Layered mountain massif — pure backdrop (no anchors/gameplay here).
+    // mountain_1/mountain_2 already bake in their own snow-cap material (see
+    // MOUNTAIN_MODELS), so there's no separate procedural "Snowcap" accent to
+    // add on top anymore — the old primitive only added one for h > 34
+    // specifically because a plain rock cone had no snow of its own.
     for (let i = 0; i < 7; i++) {
       const mx = cx + rf(-20, 20)
       const mz = cz + rf(-20, 20)
-      const h = rf(20, 52)
-      const rad = rf(11, 24)
-      add({
-        name: `${name} Mountain`,
-        pos: [mx, h / 2 + 0.05, mz],
-        scale: [rad, h, rad],
-        mesh: 'cylinder',
-        radiusTop: rnd() < 0.4 ? 0.12 : 0,
-        radiusBottom: 0.5,
-        color: i % 3 === 0 ? C.rock : C.rockDark,
-        roughness: 0.95,
-        collider: 3
-      })
-      if (h > 34) {
-        add({
-          name: `${name} Snowcap`,
-          pos: [mx, h - 2.5, mz],
-          scale: [rad * 0.4, 7, rad * 0.4],
-          mesh: 'cylinder',
-          radiusTop: 0,
-          radiusBottom: 0.5,
-          color: C.snow,
-          roughness: 0.9,
-          collider: 0
-        })
-      }
+      addMountain(mx, mz, rf(20, 52), name, i)
     }
     // Scattered boulders
     for (let i = 0; i < 6; i++) {
-      add({
-        name: `${name} Boulder`,
-        pos: [cx + rf(-28, 28), rf(0.8, 2), cz + rf(-28, 28)],
-        scale: [rf(2, 5), rf(1.6, 4), rf(2, 5)],
-        mesh: 'sphere',
-        rot: yawQuat(rf(0, 360)),
-        color: C.rock,
-        roughness: 0.95,
-        collider: 3
-      })
+      addRock(cx + rf(-28, 28), cz + rf(-28, 28), 0.05, rf(1.6, 4))
     }
   }
 }
@@ -1367,6 +1541,30 @@ push('core-schema::Name', names)
 const composite = { version: 1, components }
 mkdirSync(resolve(ROOT, 'assets/scene'), { recursive: true })
 writeFileSync(resolve(ROOT, 'assets/scene/main.composite'), JSON.stringify(composite))
+
+if (DEBUG_MOUNTAINS) {
+  // addMountain() already auto-shrinks any footprint that clashes with
+  // MOUNTAIN_CLASH_RECTS, so this should report nothing left uncleared. It's
+  // kept as a sanity check (e.g. in case a mountain hit the 0.15x shrink
+  // floor and still clashes) rather than as the primary fix mechanism.
+  const overlaps = (m, r) => m.xMin < r.x1 && m.xMax > r.x0 && m.zMin < r.z1 && m.zMax > r.z0
+  console.log('\n=== Mountain footprints still spilling into a neighbouring named zone (should be empty) ===')
+  let any = false
+  for (const m of mountainDebugLog) {
+    const hits = Object.entries(MOUNTAIN_CLASH_RECTS).filter(([, r]) => overlaps(m, r))
+    if (hits.length) {
+      any = true
+      console.log(
+        `${m.key.padEnd(16)} id=${m.id} pos=(${m.px},${m.pz}) scale=${m.scale} ${m.src}` +
+          ` footprint x[${m.xMin},${m.xMax}] z[${m.zMin},${m.zMax}]` +
+          (m.overridden ? ' [SHRUNK]' : '') +
+          ` -> still spills into: ${hits.map(([n]) => n).join(', ')}`
+      )
+    }
+  }
+  if (!any) console.log('(none — every clash was auto-resolved)')
+  console.log(`\nMountains auto-shrunk this run: ${mountainDebugLog.filter(m => m.overridden).length} of ${mountainDebugLog.length}`)
+}
 
 // Trim anchor lists to keep the generated module small but still varied.
 function thin(list, max) {
