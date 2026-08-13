@@ -19,26 +19,36 @@ import {
 import { Color3, Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { getPlatform } from '@dcl/sdk/platform'
 import { TEXTURE_ALPHABET, TileStatus } from './config'
-import { letterTextureCrop } from './letters'
+import { letterPlaneUvs } from './letters'
 import { BOARD_CELL_SIZE, BOARD_Y } from './generated/layout'
 import { cellCenter } from './board'
 import { TileState, tileEntities, getBoardCells } from './state'
 import { quality } from './platform'
 
 /**
- * A letter tile is TWO stacked boxes, not one:
+ * A letter tile is a box PLUS 5 planes, not one shape:
  *
- *  - a solid, untextured "backing" — this is the tile's actual color. It has
- *    to exist as separate opaque geometry because the sheet's background is
- *    transparent, and an alpha-tested texture on a single box would punch a
- *    hole straight through to whatever is behind the tile, not reveal a color.
- *  - a slightly larger "decal" — the same box shape, alpha-tested against the
- *    sprite sheet, carrying only the glyph. Its transparent area lets the
- *    backing underneath show through.
+ *  - a solid, untextured "backing" box — this is the tile's actual color. It
+ *    has to exist as separate opaque geometry because the sheet's background
+ *    is transparent, and an alpha-tested texture on a single shape would
+ *    punch a hole straight through to whatever is behind the tile, not
+ *    reveal a color.
+ *  - 5 "decal" planes glued to the backing's top + 4 side faces (no bottom —
+ *    see `DECAL_FACES`), alpha-tested against the sprite sheet, carrying only
+ *    the glyph. Each plane's transparent area lets the backing underneath
+ *    show through.
  *
- * The decal sits at INNER_SCALE⁻¹ relative to the backing (i.e. strictly
- * outside it) so their surfaces never sit exactly coplanar — avoids z-fighting
- * on the glyph itself, which IS opaque and does render at the decal's surface.
+ * This used to be a single 6-face box for the decal instead of 5 planes.
+ * Real-device testing on Godot Explorer never got a box's per-face UVs fully
+ * right (see letters.ts's `letterPlaneUvs` for the two failed attempts and
+ * why); a plane only needs one crop, applied once, with no per-face winding
+ * to guess at, so 5 of them replaced the 1 box.
+ *
+ * Each decal plane sits exactly on the backing's outer surface (offset 0.5 —
+ * see `DECAL_FACES`) while the backing itself is inset to INNER_SCALE — so
+ * the decal is still strictly outside the backing and their surfaces never
+ * sit exactly coplanar, avoiding z-fighting on the glyph itself, which IS
+ * opaque and does render at the decal's surface.
  */
 const INNER_SCALE = 0.9
 
@@ -46,46 +56,76 @@ const INNER_SCALE = 0.9
 const BOARD_LETTER_SIZE = 1.3
 
 /**
- * Crop via the material's `texture.offset`/`texture.tiling`, NOT custom mesh
- * UVs. An earlier version supplied a 96-value per-face UV array to
- * `MeshRenderer.setBox` on the assumption every face shares one winding —
- * wrong in-world: the top face cropped correctly, the sides did not, so the
- * box's default per-face winding is not uniform the way that assumes.
+ * Crop via custom mesh UVs (`MeshRenderer.setPlane(face, uvs)`), NOT the
+ * material's `texture.offset`/`texture.tiling`. A letter change only ever
+ * rewrites each decal face's mesh from here on — the Material is bound once
+ * per face, in `ensureLetterVisual`, and never touched again after that.
  *
- * `final_uv = offset + input_uv * tiling` is an affine remap applied to
- * whatever UV each face already has — and `MeshRenderer.setBox()` called with
- * no `uvs` argument uses the engine's own built-in unwrap, which is
- * necessarily self-consistent since it's the renderer's own primitive. So
- * every face already spans a full, correctly-oriented 0..1 range on its own,
- * and remapping that through one shared transform crops the same rectangle
- * everywhere regardless of any individual face's winding or starting corner.
- * The mesh keeps its default UVs; only the texture changes.
+ * An earlier version of this file did the crop via offset/tiling specifically
+ * to dodge per-face UV winding not being uniform on a box (see letters.ts)
+ * — an unrelated later investigation identified swapping the whole Material
+ * on every letter change (which offset/tiling requires, since each letter
+ * needs a differently-parameterized `Texture.Common`) as the cause of a ~1s
+ * wrong-letter flash on some clients. Rewriting only a mesh's uvs avoids
+ * that: the Material component's value never changes after setup.
  *
- * Rebuildable, not a one-time const: see `applyPlatformFixes` below —
- * Unity Explorer and Godot Explorer sample this V axis in opposite
- * directions, and which one a client is can't be known until a few frames
- * after startup, so this may get rebuilt once with the corrected flip.
+ * `TEXTURE_ALPHABET_MATERIAL_TEXTURE` is the one, unchanging texture
+ * reference every decal face's Material points at forever.
  */
-function buildLetterTextures(flip: boolean) {
-  return Array.from({ length: 26 }, (_, i) => {
-    const crop = letterTextureCrop(i, flip)
-    return Material.Texture.Common({
-      src: TEXTURE_ALPHABET,
-      wrapMode: TextureWrapMode.TWM_CLAMP,
-      offset: crop.offset,
-      tiling: crop.tiling
-    })
-  })
-}
+const TEXTURE_ALPHABET_MATERIAL_TEXTURE = Material.Texture.Common({
+  src: TEXTURE_ALPHABET,
+  wrapMode: TextureWrapMode.TWM_CLAMP
+})
 
-/** Confirmed correct for Godot Explorer (desktop/mobile/VR) — see letters.ts. */
-let flipV = true
-let LETTER_TEXTURES = buildLetterTextures(flipV)
+/**
+ * Under the OLD material-offset/tiling crop, Godot needed `flip = true` and
+ * Unity needed `flip = false` — that asymmetry came from each engine's OWN
+ * default box UV unwrap running a different V direction, which the material
+ * remap was layered on top of. The decal doesn't go through any default UV
+ * anymore (mesh UVs are supplied explicitly, per letter, on planes) — that
+ * indirection is gone, so the platform asymmetry it caused should be gone
+ * too. Real-device testing on Godot mobile with the inherited `true` default
+ * showed wrong crops (small/wrong-cell glyphs) alongside Unity being
+ * correct at `false`, consistent with both platforms now wanting the same,
+ * unflipped value. No longer toggled by `applyPlatformFixes` — see there.
+ */
+let flipV = false
+
+/**
+ * The 4 side faces + top of a 1×1×1 cube, as plane transforms relative to
+ * the parent. No bottom face — tiles only ever yaw (never pitch or roll, see
+ * `boardYaw` below), so the underside is never visible; skipping it halves
+ * the per-letter `MeshRenderer.setPlane()` writes for no visual cost.
+ *
+ * A plane is double-sided with an IDENTICAL (non-mirrored) crop on both
+ * sides — confirmed by Decentraland's own worked example for a plane's uvs,
+ * see `letterPlaneUvs` in letters.ts — so which of a plane's two default
+ * sides ends up facing outward doesn't matter, only which axis it's tipped
+ * around does, and a bare 90°/180° axis rotation (never a reflection) can't
+ * mirror the glyph either way.
+ *
+ * The unrotated default was first assumed to lie flat (normal along Y); a
+ * real-device check showed every face (including the un-rotated "top" one)
+ * came out standing perpendicular to the surface it should sit flush on —
+ * meaning the true default stands vertically instead, normal along Z (the
+ * common "picture frame" convention most engines use for a bare quad/plane).
+ * Rotations below now start from THAT assumption: +Z/-Z need none at all
+ * (only a position offset — being double-sided, the same un-rotated plane
+ * works facing either way), top needs a 90° tip around X to lie flat, and
+ * ±X needs a 90° turn around Y to face sideways instead of along Z.
+ */
+const DECAL_FACES: { position: Vector3; rotation: Quaternion }[] = [
+  { position: Vector3.create(0, 0.5, 0), rotation: Quaternion.fromEulerDegrees(90, 0, 0) }, // top
+  { position: Vector3.create(0, 0, 0.5), rotation: Quaternion.fromEulerDegrees(0, 0, 0) }, // +Z
+  { position: Vector3.create(0, 0, -0.5), rotation: Quaternion.fromEulerDegrees(0, 0, 0) }, // -Z
+  { position: Vector3.create(0.5, 0, 0), rotation: Quaternion.fromEulerDegrees(0, 90, 0) }, // +X
+  { position: Vector3.create(-0.5, 0, 0), rotation: Quaternion.fromEulerDegrees(0, -90, 0) } // -X
+]
 
 const backingOf = new Map<Entity, Entity>()
-const decalOf = new Map<Entity, Entity>()
+const decalOf = new Map<Entity, Entity[]>()
 
-function ensureLetterVisual(parent: Entity): { backing: Entity; decal: Entity } {
+function ensureLetterVisual(parent: Entity): { backing: Entity; decals: Entity[] } {
   let backing = backingOf.get(parent)
   if (!backing) {
     backing = engine.addEntity()
@@ -103,23 +143,29 @@ function ensureLetterVisual(parent: Entity): { backing: Entity; decal: Entity } 
     backingOf.set(parent, backing)
   }
 
-  let decal = decalOf.get(parent)
-  if (!decal) {
-    decal = engine.addEntity()
-    Transform.create(decal, {
-      position: Vector3.create(0, 0, 0),
-      scale: Vector3.create(1, 1, 1),
-      parent
+  let decals = decalOf.get(parent)
+  if (!decals) {
+    decals = DECAL_FACES.map(({ position, rotation }) => {
+      const face = engine.addEntity()
+      Transform.create(face, { position, rotation, scale: Vector3.create(1, 1, 1), parent })
+      MeshRenderer.setPlane(face)
+      Material.setPbrMaterial(face, DECAL_MATERIAL)
+      return face
     })
-    MeshRenderer.setBox(decal)
-    decalOf.set(parent, decal)
+    decalOf.set(parent, decals)
   }
 
-  return { backing, decal }
+  return { backing, decals }
 }
 
-const DECAL_MATERIAL = (letterIndex: number) => ({
-  texture: LETTER_TEXTURES[letterIndex],
+/**
+ * Bound to every decal face exactly once, at creation, right above. Never
+ * touched again after that — see `styleAsLetter`, which crops by rewriting
+ * each face's mesh UVs instead of swapping this out for a differently-cropped
+ * Material.
+ */
+const DECAL_MATERIAL = {
+  texture: TEXTURE_ALPHABET_MATERIAL_TEXTURE,
   albedoColor: Color4.White(),
   transparencyMode: MaterialTransparencyMode.MTM_ALPHA_TEST,
   alphaTest: 0.5,
@@ -128,10 +174,10 @@ const DECAL_MATERIAL = (letterIndex: number) => ({
   metallic: 0,
   roughness: 0.75,
   specularIntensity: 0.2
-})
+}
 
 /**
- * Style `parent`'s letter visual. Creates the backing + decal pair on first use.
+ * Style `parent`'s letter visual. Creates the backing + decal faces on first use.
  *
  * Tried dropping the backing for on-board letters specifically, on the theory
  * that the board's own surface right underneath would show through the
@@ -143,44 +189,52 @@ const DECAL_MATERIAL = (letterIndex: number) => ({
  * geometry, etc.), not the grid texture. Confirmed wrong by a real-device
  * report ("was white, now it's transparent"). Every letter, on the board or
  * loose in the world, needs the same opaque backing behind its decal.
+ *
+ * Only ever touches each decal face's mesh (`MeshRenderer.setPlane`'s uvs) —
+ * never its Material, which is bound once in `ensureLetterVisual` and left
+ * alone. That's what makes staging/re-styling an existing entity cheap: it's
+ * a mesh data rewrite, not a Material component swap.
  */
 function styleAsLetter(parent: Entity, letterIndex: number): void {
-  const { decal } = ensureLetterVisual(parent)
-  Material.setPbrMaterial(decal, DECAL_MATERIAL(letterIndex))
+  const { decals } = ensureLetterVisual(parent)
+  const uvs = letterPlaneUvs(letterIndex, flipV)
+  for (const face of decals) MeshRenderer.setPlane(face, uvs)
   activeLetterIndex.set(parent, letterIndex)
 }
 
 /**
  * Every currently-styled letter parent and which glyph it's showing —
- * covers loose tiles, board letters, and staged previews alike. The only
- * reason this exists is `applyPlatformFixes`: when the V-flip correction
- * lands a few frames after everything above has already been drawn once with
- * the (possibly wrong) default, this is what gets walked to redraw it right.
- * Entries are removed alongside their entity wherever this file destroys one.
+ * covers loose tiles, board letters, and staged previews alike.
+ *
+ * Currently unread: this existed for `applyPlatformFixes` to redraw
+ * everything once a platform-dependent V-flip correction resolved a few
+ * frames after the initial (possibly wrong) draw. That flip is no longer
+ * platform-dependent (see `let flipV = false` above) so nothing walks this
+ * map right now — kept rather than deleted since the crop's platform
+ * behaviour has flipped back and forth more than once already this project,
+ * and this is the thing that would need to come back first if it does again.
  */
 const activeLetterIndex = new Map<Entity, number>()
 
 /**
- * Unity Explorer and Godot Explorer were confirmed, side by side, to disagree
- * on TWO independent things for a letter cube, both traced to the same root
- * cause — they sample a mesh material's V axis in opposite directions:
+ * Unity Explorer and Godot Explorer used to disagree on TWO independent
+ * things for a letter cube — the crop's V-flip and the board letter yaw —
+ * both traced to each engine's own default box UV unwrap running in a
+ * different direction. Both corrections were removed once the decal moved
+ * from a box with a default unwrap to planes with an explicit, per-face UV
+ * (see `let flipV = false` and `BOARD_LETTER_YAW` above): real-device
+ * testing confirmed both platforms actually want the SAME value now that
+ * the thing that made them differ no longer applies.
  *
- *  - `letterTextureCrop`'s offset/tiling (see that function's comment) — which
- *    LETTER shows.
- *  - The board letter yaw (see `boardYaw` below) — which WAY the glyph faces,
- *    since the box's default UV unwrap on opposite faces is itself mirrored
- *    by the same V flip, so getting the crop right and getting the facing
- *    right are two separate corrections, not one.
- *
- * `getPlatform()` only resolves a few frames after scene start (it's an async
- * round trip to the runtime), so neither can just be read once at module
- * load; this polls until an answer arrives, corrects whichever of the two
- * this client needs, and redraws/re-rotates everything already on screen.
- *
- * Unity Explorer has no mobile or VR build, so `desktop` is the only
- * `getPlatform()` value it can ever report — branching on that alone is
- * enough to separate it from Godot Explorer's desktop/mobile/VR builds,
- * which all confirmed the opposite (default) behaviour for both.
+ * This function currently does nothing but mark itself done once
+ * `getPlatform()` resolves — kept, rather than removed along with the two
+ * corrections it used to make, because this exact pair of corrections has
+ * already flipped between "platform-dependent" and "not" more than once
+ * over the course of this project as the underlying rendering approach
+ * changed. If a THIRD platform-specific quirk turns up, this is where it'd
+ * go; `getPlatform()` still only resolves a few frames after scene start
+ * (it's an async round trip to the runtime), which is why this stays a
+ * polling system rather than a one-off check at module load.
  */
 let platformFixDone = false
 function applyPlatformFixes(): void {
@@ -188,25 +242,6 @@ function applyPlatformFixes(): void {
   const platform = getPlatform()
   if (platform === null) return // not resolved yet — keep polling
   platformFixDone = true
-
-  const isUnity = platform === 'desktop'
-
-  const shouldFlip = !isUnity
-  if (shouldFlip !== flipV) {
-    flipV = shouldFlip
-    LETTER_TEXTURES = buildLetterTextures(flipV)
-    for (const [parent, letterIndex] of activeLetterIndex) {
-      styleAsLetter(parent, letterIndex)
-    }
-  }
-
-  const correctYaw = isUnity ? BOARD_LETTER_YAW_UNITY : BOARD_LETTER_YAW_GODOT
-  if (correctYaw !== boardYaw) {
-    boardYaw = correctYaw
-    const rotation = Quaternion.fromEulerDegrees(0, boardYaw, 0)
-    for (const entity of boardLetterEntities.values()) Transform.getMutable(entity).rotation = rotation
-    for (const entity of stagedLetterEntities.values()) Transform.getMutable(entity).rotation = rotation
-  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -227,11 +262,11 @@ export function setupTileVisuals(): void {
     })
     styleAsLetter(child, 0)
     // propagateToChildren MUST be explicit. `child` carries no mesh of its
-    // own — the actual renderers are `backing`/`decal`, grandchildren created
-    // inside styleAsLetter. Per PBVisibilityComponent's own spec: an entity
-    // with no OWN visibility component is only hidden by a PARENT that has
-    // propagate=true; with it left at the default (false), backing/decal
-    // have no own component and no propagating ancestor, so the spec's own
+    // own — the actual renderers are `backing`/the decal faces, grandchildren
+    // created inside styleAsLetter. Per PBVisibilityComponent's own spec: an
+    // entity with no OWN visibility component is only hidden by a PARENT
+    // that has propagate=true; with it left at the default (false), backing/
+    // decal faces have no own component and no propagating ancestor, so the spec's own
     // fallback rule makes them "visible" regardless of what `child` says.
     // Godot Explorer happened to cascade hidden state through the hierarchy
     // anyway (ordinary scene-graph behaviour for it); Unity Explorer applied
@@ -291,22 +326,20 @@ function tileVisualSystem(dt: number): void {
  * Yaw applied to every letter resting on the board.
  *
  * Board rows run along +Z (row 0 is the low-Z edge), so the direction that
- * reads as "up"/the top of the board is -Z. The box's default unwrap puts the
- * glyph the other way round, which left placed letters facing away from the
- * board's reading direction — a half turn lines them up. Confirmed on Godot
- * Explorer (desktop/mobile/VR).
- *
- * Unity Explorer needs the OTHER half turn — same root cause as the
- * offset/tiling V-flip in `letterTextureCrop`: its mesh V axis runs the
- * opposite way, which flips the box's default UV unwrap on the faces this
- * yaw is compensating for, so the correction has to invert too. See
- * `applyPlatformFixes`, which is what actually decides which of these two a
- * given client uses at runtime — `boardYaw` starts on the Godot value and
- * only changes if the client turns out to be Unity.
+ * reads as "up"/the top of the board is -Z. This used to need a
+ * platform-dependent half turn — Godot Explorer wanted 180°, Unity Explorer
+ * wanted 0° — traced (like the old crop V-flip) to each engine's OWN default
+ * box UV unwrap running a different direction. Now that the decal is planes
+ * with an explicit, per-face UV (no default box unwrap involved at all — see
+ * `DECAL_FACES` and `letterPlaneUvs`), that indirection is gone, same as it
+ * was for the crop flip. Real-device testing after the box → plane change
+ * confirmed it: Unity stayed correct at 0°, and Godot — inheriting the old
+ * 180° default — needed a further 180° to read correctly, landing back on
+ * 0°. Both platforms now use the same value; see `applyPlatformFixes`,
+ * which no longer touches this at all as a result.
  */
-const BOARD_LETTER_YAW_GODOT = 180
-const BOARD_LETTER_YAW_UNITY = 0
-let boardYaw = BOARD_LETTER_YAW_GODOT
+const BOARD_LETTER_YAW = 0
+let boardYaw = BOARD_LETTER_YAW
 
 /**
  * How much of a committed letter still shows above the board surface.
@@ -403,10 +436,20 @@ export function showStagedLetter(cell: number, letterIndex: number): void {
   let entity = stagedLetterEntities.get(cell)
   if (!entity) {
     // Staged: left standing proud of the board until it's actually accepted.
+    console.log("JDEBUG", Date.now() );
+  
     entity = createBoardLetterEntity(cell, false)
+
+    console.log("JDEBUG_B", Date.now() );
+    
     stagedLetterEntities.set(cell, entity)
+    
+    console.log("JDEBUG_C", Date.now() );
+    
   }
   styleAsLetter(entity, letterIndex)
+  console.log("JDEBUG_D", Date.now() );
+    
 }
 
 export function clearStagedLetter(cell: number): void {

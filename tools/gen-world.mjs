@@ -376,6 +376,19 @@ function addModel(name, slug, pos, opts = {}) {
 const anchors = { NORTH: [], SOUTH: [], EAST: [], WEST: [] }
 const addAnchor = (zone, x, y, z) => anchors[zone].push([r3(x), r3(y + 1.0), r3(z)])
 
+/**
+ * Landmark spawn points that always hold the SAME letter — unlike the
+ * regular `anchors` pool (random position picked from the zone, random
+ * letter drawn per spawn), these are meant as a fixed, findable reward: the
+ * host always keeps a tile with this exact letter sitting at this exact
+ * spot. Written to layout.ts as FIXED_LETTER_ANCHORS; host.ts pins one
+ * dedicated tile entity per entry to it (see host.ts's reservation of the
+ * last `FIXED_LETTER_ANCHORS.length` tileEntities indices).
+ */
+const fixedLetterAnchors = []
+const addFixedLetterAnchor = (zone, letter, x, y, z) =>
+  fixedLetterAnchors.push({ zone, letter, pos: [r3(x), r3(y + 1.0), r3(z)] })
+
 /* ================================================================== *
  * CENTER — Aztec plaza + 21x21 Scrabble board
  * ================================================================== */
@@ -930,10 +943,15 @@ function buildWest() {
     })
   }
 
-  // Silos ("big pillars") — same pipe.glb as the thin pipe runs below, just
-  // scaled to a much fatter, collidable cross-section instead of the thin
-  // non-collidable one. Base-anchored model, so pos.y is ground level (0.05)
-  // directly rather than the old primitive's centre-based h/2 + 0.05.
+  // Silos ("big pillars") — fat, collidable pipe.glb, ground-anchored.
+  // Base-anchored model, so pos.y is ground level (0.05) directly rather
+  // than the old primitive's centre-based h/2 + 0.05.
+  //
+  // The thin, randomly-horizontal-or-vertical "background pipe runs" that
+  // used to be scattered here at floating heights (rf(2, 14), no ground
+  // anchoring) were removed per the user — cluttered/ugly, especially the
+  // horizontal skinny ones hanging in mid-air. Only these big vertical Silos
+  // remain.
   for (let i = 0; i < 6; i++) {
     const px = rf(x0 + 5, x0 + BLOCK - 5)
     const pz = rf(z0 + 5, z0 + BLOCK - 5)
@@ -942,16 +960,6 @@ function buildWest() {
     const diaZ = rf(3.5, 6)
     addPipe(px, 0.05, pz, h, false, diaX, diaZ)
     addAnchor('WEST', px, h + 0.1, pz)
-  }
-  // Thin background pipe runs — collidable, using the model's own collider
-  // (per explicit request; the primitive version these replaced had
-  // collider: 0, but that's no longer the intent).
-  for (let i = 0; i < 7; i++) {
-    const px = rf(x0 + 4, x0 + BLOCK - 4)
-    const pz = rf(z0 + 4, z0 + BLOCK - 4)
-    const len = rf(8, 22)
-    const horizontal = rnd() < 0.5
-    addPipe(px, rf(2, 14), pz, len, horizontal)
   }
   // Crate stacks (climbable)
   for (let i = 0; i < 5; i++) {
@@ -1074,6 +1082,15 @@ if (!existsSync(resolve(ROOT, SOUTH_PYRAMID_MODEL_SRC))) {
  * anchor cluster below.
  */
 const SOUTH_PYRAMID_FLOOR_Y = -8.59
+// [-2.11, -15.21] deliberately removed from this pool — it's the deepest
+// point of this tunnel by actual WALKING distance along the spiral (see
+// SOUTH_PYRAMID_Q_LOCAL below — a Dijkstra shortest-path over the connected
+// floor mesh, starting from the entrance, not straight-line distance) and is
+// reserved below as the fixed 'Q' landmark instead of a random-letter spawn.
+// [-21.96, -42.35] was the original (wrong) pick — far in a straight line
+// from the entrance, but only 16th-farthest of 42 by real path length,
+// because it turned out to be reachable via a much more direct stretch of
+// the spiral. It's back in this regular pool now.
 const SOUTH_PYRAMID_FLOOR_POINTS = [
   [1.15, 2.21], [-0.77, -1.38], [0.51, 2.21], [-0.14, 2.21], [0.5, -6.6], [-0.77, -8.23],
   [11.1, -6.6], [14.33, -8.23], [3.81, -6.6], [5.84, -8.23], [-3.74, -8.23], [-5.43, -6.6],
@@ -1081,17 +1098,37 @@ const SOUTH_PYRAMID_FLOOR_POINTS = [
   [19.42, -6.6], [21.28, -8.23], [21.28, -19.51], [19.42, -29.16], [21.28, -40.58], [19.42, -42.35],
   [-21.96, -42.35], [-24.05, -40.58], [5.09, -42.35], [-7.39, -40.58], [-24.05, -37.58], [-21.96, -36.34],
   [-24.05, -33.15], [-21.96, -31.18], [-10.44, -31.18], [-1.02, -33.15], [11.18, -26.35], [13.95, -23.49],
-  [11.18, -31.18], [13.95, -33.15], [11.18, -17.92], [13.95, -15.21], [3.15, -17.92], [-2.11, -15.21]
+  [11.18, -31.18], [13.95, -33.15], [11.18, -17.92], [13.95, -15.21], [3.15, -17.92]
 ]
 
 // Upper gallery — reached via the ramp left of the entrance. Real triangle
 // centroids of the connected upper-floor component (see SOUTH_PYRAMID_FLOOR_Y
 // comment above for how these clusters were found).
 const SOUTH_PYRAMID_UPPER_FLOOR_Y = 1.59
+// [-16.1, -37.1] deliberately removed — the deepest point of THIS tunnel,
+// reserved below as the fixed 'Z' landmark, same reasoning as the 'Q' one.
 const SOUTH_PYRAMID_UPPER_FLOOR_POINTS = [
   [-14.12, -35.46], [-2.56, -37.1], [7.32, -37.1], [7.32, -22.8], [7.32, -11.2], [-9.82, -11.2],
-  [-3.79, -14.24], [4.78, -14.24], [4.78, -28.31], [4.78, -35.46], [-7.35, -35.46], [-16.1, -37.1]
+  [-3.79, -14.24], [4.78, -14.24], [4.78, -28.31], [4.78, -35.46], [-7.35, -35.46]
 ]
+
+// The two tunnel-end landmarks: 'Q' at the deepest point of the ground-floor
+// spiral, 'Z' at the deepest point of the upper gallery. High Scrabble value
+// (10 each) as an extra nudge, on top of just being a guaranteed findable
+// letter, to reward exploring all the way in rather than stopping at the
+// entrance room.
+//
+// Both are placed directly in world space now (see their addFixedLetterAnchor
+// calls below), not derived from local pyramid-space + scale arithmetic —
+// each started from a mesh-analysis guess (a Dijkstra shortest-path over the
+// connected floor mesh, from the entrance, for a true walking-distance
+// "deepest point" rather than a naive straight-line one, which for the
+// spiral specifically landed on a spot barely a third of the way in since
+// the spiral's geometric centre sits close to the entrance in a straight
+// line despite needing the whole wound path on foot), and each then got
+// corrected/nudged from actual in-world testing. Once a spot needs manual
+// correction, world space is one less thing to get wrong versus re-deriving
+// local-space offsets.
 
 // Exterior entrance-roof terrace — the flat portico roof directly above the
 // entrance colonnade. There are actually TWO stacked quads here with nearly
@@ -1149,6 +1186,24 @@ function buildSouth() {
   for (const [lx, lz] of SOUTH_PYRAMID_ENTRANCE_ROOF_POINTS) {
     addAnchor('SOUTH', pyramidX + lx * SOUTH_PYRAMID_SCALE, entranceRoofY, pyramidZ + lz * SOUTH_PYRAMID_SCALE)
   }
+
+  // Fixed 'Q'/'Z' landmarks at the two tunnels' deepest points.
+  //
+  // 'Q' started from the SOUTH_PYRAMID_Q_LOCAL mesh-derived point, then got a
+  // small manual nudge to (99, 0.2, 36.3) directly in world space per
+  // in-world testing — same reasoning as 'Z' below for going world-space
+  // once a mesh-derived pick needs correcting: no local/pyramid-offset
+  // arithmetic to get wrong on the way to the final spot.
+  addFixedLetterAnchor('SOUTH', 'Q', 99, 0.2, 36.3)
+  // Given directly in WORLD space (not derived from SOUTH_PYRAMID_Z_LOCAL /
+  // upperFloorY like everything else here) — the mesh-analysis pick above
+  // landed on the wrong spot (component 41 turned out to be a disconnected
+  // landing, not the actual continuation of the ramp upward; its
+  // floor-normal filter likely dropped the sloped ramp surface itself,
+  // since a ramp's normal isn't within the >0.7 "floor" threshold). This is
+  // the real uphill tunnel's deepest point, reported directly from in-world
+  // testing rather than re-derived from the model.
+  addFixedLetterAnchor('SOUTH', 'Z', 107, 10.3, 40)
 }
 
 /**
@@ -1635,6 +1690,10 @@ export const TILE_ANCHORS: Record<ZoneName, [number, number, number][]> = {
   EAST: ${JSON.stringify(anchorsOut.EAST)},
   WEST: ${JSON.stringify(anchorsOut.WEST)}
 }
+
+/** Landmark spawn points that always hold the same letter (see gen-world.mjs's
+ * addFixedLetterAnchor) — host.ts pins one dedicated tile entity per entry. */
+export const FIXED_LETTER_ANCHORS: { zone: ZoneName; letter: string; pos: [number, number, number] }[] = ${JSON.stringify(fixedLetterAnchors)}
 
 /** Premium multiplier map, one entry per board cell (0 normal, 1 DL, 2 TL, 3 DW, 4 TW, 5 star). */
 export const CELL_PREMIUM: number[] = ${JSON.stringify(

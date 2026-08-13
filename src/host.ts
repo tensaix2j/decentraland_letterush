@@ -29,7 +29,16 @@ import {
   TileStatus,
   ToastMessage
 } from './config'
-import { BOARD_X0, BOARD_Z0, BOARD_N, BOARD_CELL_SIZE, TILE_ANCHORS, ZONE_NAMES, ZoneName } from './generated/layout'
+import {
+  BOARD_X0,
+  BOARD_Z0,
+  BOARD_N,
+  BOARD_CELL_SIZE,
+  FIXED_LETTER_ANCHORS,
+  TILE_ANCHORS,
+  ZONE_NAMES,
+  ZoneName
+} from './generated/layout'
 import {
   BoardState,
   RoundState,
@@ -43,7 +52,7 @@ import {
 } from './state'
 import { connectedAddresses, isHost } from './players'
 import { evaluateSubmission } from './board'
-import { drawLetter } from './letters'
+import { drawLetter, charToLetter } from './letters'
 
 let bus: MessageBus
 let accum = 0
@@ -128,6 +137,12 @@ function startRound(roundId: number, now: number): void {
     Transform.getMutable(tile).position = Vector3.create(0, -50, 0)
   }
 
+  // Fixed-letter landmarks (pyramid tunnel ends) go straight back out
+  // immediately — they don't wait for the batched spawnTiles() cycle like
+  // ordinary tiles, so they're guaranteed to be there from the start of
+  // every round, not just "eventually" a few seconds in.
+  for (let i = 0; i < FIXED_LETTER_ANCHORS.length; i++) placePinnedTile(i, now, roundId)
+
   // DEBUG ONLY — remove when done debugging. Drops 3 easy, always-available
   // pickup tiles just north of the board (past its top edge) so there's no
   // need to trek out to a zone every time the round resets while testing.
@@ -179,6 +194,40 @@ function liveTilePositions(): Array<[number, number]> {
   return positions
 }
 
+/**
+ * Fixed-letter landmarks (currently the pyramid's two tunnel ends — see
+ * gen-world.mjs's SOUTH_PYRAMID_Q_LOCAL/Z_LOCAL) reserve the LAST
+ * `FIXED_LETTER_ANCHORS.length` slots of the tile pool. Those tile entities
+ * never go through the normal random zone/anchor/letter spawn path — they
+ * always return to their own designated spot with their own designated
+ * letter. Computed lazily (not a top-level const) because tileEntities isn't
+ * populated until createSyncedState() runs, which happens before
+ * setupHost() but after this module's own top-level code runs.
+ */
+function pinnedTileIndex(i: number): number {
+  return tileEntities.length - FIXED_LETTER_ANCHORS.length + i
+}
+
+/** Which FIXED_LETTER_ANCHORS entry `index` is reserved for, or -1 if it's an ordinary tile slot. */
+function pinnedAnchorIndexFor(index: number): number {
+  const start = tileEntities.length - FIXED_LETTER_ANCHORS.length
+  return index >= start ? index - start : -1
+}
+
+/** Place fixed-letter landmark `i` at its designated spot, in the world, right now.
+ * `roundId` is omitted (left untouched) for the reclaim case, which never touched it before either. */
+function placePinnedTile(i: number, now: number, roundId?: number): void {
+  const fixed = FIXED_LETTER_ANCHORS[i]
+  const tile = tileEntities[pinnedTileIndex(i)]
+  Transform.getMutable(tile).position = Vector3.create(fixed.pos[0], fixed.pos[1], fixed.pos[2])
+  const state = TileState.getMutable(tile)
+  state.letter = charToLetter(fixed.letter)
+  state.status = TileStatus.IN_WORLD
+  state.holder = ''
+  if (roundId !== undefined) state.roundId = roundId
+  state.updatedAt = now
+}
+
 // Big enough to cover the +/-0.3 m spawn jitter on both the existing tile and
 // the new one, so two tiles can never end up close enough to visually overlap
 // even if they land at slightly different anchors.
@@ -222,6 +271,18 @@ function spawnTiles(): void {
 
   for (let n = 0; n < budget; n++) {
     const index = free[n]
+
+    // A fixed-letter landmark that got picked up and submitted/consumed —
+    // send it straight back to its own designated spot+letter instead of
+    // the normal random zone/anchor/letter treatment.
+    const pinned = pinnedAnchorIndexFor(index)
+    if (pinned !== -1) {
+      placePinnedTile(pinned, now, round.roundId)
+      const fixed = FIXED_LETTER_ANCHORS[pinned]
+      occupied.push([fixed.pos[0], fixed.pos[2]])
+      continue
+    }
+
     const zone = ZONE_NAMES[zoneCursor % ZONE_NAMES.length] as ZoneName
     zoneCursor++
     if (!TILE_ANCHORS[zone].length) continue
@@ -246,11 +307,23 @@ function spawnTiles(): void {
 function reclaimAbandonedTiles(now: number): void {
   const present = connectedAddresses()
   const occupied = liveTilePositions()
-  for (const tile of tileEntities) {
+  for (let index = 0; index < tileEntities.length; index++) {
+    const tile = tileEntities[index]
     const state = TileState.getOrNull(tile)
     if (!state || state.status !== TileStatus.HELD) continue
     if (present.indexOf(state.holder) !== -1) continue
     if (now - state.updatedAt < ABANDON_MS) continue
+
+    // A fixed-letter landmark abandoned by whoever carried it off — back to
+    // its own spot, not a random zone (never touches roundId here, matching
+    // what this function already did for ordinary tiles below).
+    const pinned = pinnedAnchorIndexFor(index)
+    if (pinned !== -1) {
+      placePinnedTile(pinned, now)
+      const fixed = FIXED_LETTER_ANCHORS[pinned]
+      occupied.push([fixed.pos[0], fixed.pos[2]])
+      continue
+    }
 
     const zone = ZONE_NAMES[zoneCursor++ % ZONE_NAMES.length] as ZoneName
     if (!TILE_ANCHORS[zone].length) continue

@@ -66,24 +66,40 @@ function letterCell(index: number): { col: number; row: number } {
 const PAD = 0.0015
 
 /**
- * Crop for a mesh's base `texture` (NOT `uiBackground`, NOT `emissiveTexture`).
+ * 8-value UV array for a single `MeshRenderer.setPlane()` face, cropped to
+ * one glyph cell.
  *
- * This deliberately does NOT touch mesh UVs. An earlier version supplied a
- * custom 96-value array to `MeshRenderer.setBox` (one quad repeated across all
- * 6 faces x 2 sides) on the theory that every face shares the same vertex
- * winding — confirmed wrong in-world: the top face cropped correctly, the side
- * faces did not, meaning the box's default per-face UV winding is NOT uniform
- * across faces the way a flat "repeat this quad everywhere" array assumes.
+ * This replaces an attempt at cropping a single 6-face box directly. Real-
+ * device testing went through two rounds and never got a box fully right on
+ * Godot Explorer: a 48-value array (4 corners * 6 faces) left one face
+ * correct and the rest uncropped; doubling it to 96 (matching
+ * `PBMeshRenderer_BoxMesh`'s own doc comment, "6 faces * 2 sides * 4
+ * vertices") made the previously-correct face wrong too, while the others
+ * stayed uncropped — and Decentraland's own materials doc separately
+ * describes a box needing only 48 ("Each of the 6 faces of the cube takes 4
+ * pairs of coordinates... All of these 48 values"), contradicting the
+ * generated type's comment. With two official sources disagreeing and both
+ * lengths failing in-world, a box's per-face vertex order isn't something
+ * this project can reliably target.
  *
- * `Texture.offset`/`Texture.tiling` sidestep the problem entirely: the proto
- * defines `final_uv = offset + input_uv * tiling`, applied per-vertex on
- * whatever UV each face already has by default. Since `MeshRenderer.setBox()`
- * with no `uvs` argument uses the engine's own built-in box unwrap — which is
- * necessarily self-consistent, being the renderer's own primitive — every face
- * already spans a full, correctly-oriented 0..1 range on its own. Remapping
- * that through a single shared affine transform crops the same sub-rectangle
- * everywhere, independent of any face's individual winding or starting corner.
- * The mesh is left with its default UVs; only the material's texture changes.
+ * A plane sidesteps all of it: Decentraland's own materials doc gives a
+ * complete, working example of a plane's uvs (8 values — 4 corners, listed
+ * twice for the plane's 2 sides, in the SAME order both times, not
+ * reversed). One crop, one winding, no per-face guessing — see view.ts's
+ * `DECAL_FACES`, which builds a letter out of 5 of these (top + 4 sides, no
+ * bottom — tiles only ever yaw, never pitch or roll, so the underside is
+ * never seen) instead of one 6-face box.
+ *
+ * The corner order below is NOT the docs' own example order (bottom-left
+ * first) — an earlier version of this function used that and, on Godot
+ * Explorer, came out both mirrored and cropped to a tiny sliver of the cell
+ * instead of the full glyph. Reversing the 4 corners' traversal direction is
+ * exactly the box attempt's top-left-first order, which was the one face
+ * that DID crop correctly on Godot back when this used a 6-face box (see
+ * above) — reusing that proven-on-Godot order here fixed both symptoms at
+ * once, which makes sense: walking the same 4 points in the opposite
+ * direction against a fixed vertex sequence is a reflection, not just a
+ * different starting corner.
  *
  * IMPORTANT: mesh texture V is the standard GL convention — v=0 is the BOTTOM
  * of the texture, v increases UPWARD. This is the opposite of `letterUiUvs`
@@ -95,22 +111,24 @@ const PAD = 0.0015
  * `flip` exists because that GL convention turned out to only be half the
  * story: Decentraland has two independent official client codebases —
  * Unity Explorer (desktop-only) and Godot Explorer (desktop/mobile/VR) — and
- * they were confirmed, side by side, to sample a mesh material's V axis in
- * OPPOSITE directions for the exact same `offset`/`tiling` numbers. Godot
- * renders correctly with `flip = true` (the mapping above); Unity needs
- * `flip = false` — i.e. row used directly, no bottom-up inversion — to show
- * the same letter. See view.ts for which platforms get which.
+ * they were confirmed, side by side, to sample a mesh's V axis in OPPOSITE
+ * directions. Godot renders correctly with `flip = true` (the mapping
+ * below); Unity needs `flip = false` — i.e. row used directly, no bottom-up
+ * inversion — to show the same letter. See view.ts for which platforms get
+ * which.
  */
-export type TextureCrop = { offset: { x: number; y: number }; tiling: { x: number; y: number } }
-
-export function letterTextureCrop(index: number, flip: boolean): TextureCrop {
+export function letterPlaneUvs(index: number, flip: boolean): number[] {
   const { col, row } = letterCell(index)
   const imgRow = flip ? SHEET_ROWS - 1 - row : row
   const u0 = col / SHEET_COLS + PAD
   const u1 = (col + 1) / SHEET_COLS - PAD
   const v0 = imgRow / SHEET_ROWS + PAD
   const v1 = (imgRow + 1) / SHEET_ROWS - PAD
-  return { offset: { x: u0, y: v0 }, tiling: { x: u1 - u0, y: v1 - v0 } }
+
+  // Top-left, top-right, bottom-right, bottom-left — the reverse of the
+  // docs' own example order; see the function comment above for why.
+  const quad = [u0, v1, u1, v1, u1, v0, u0, v0]
+  return [...quad, ...quad]
 }
 
 /**
@@ -120,7 +138,7 @@ export function letterTextureCrop(index: number, flip: boolean): TextureCrop {
  *
  * IMPORTANT: 2D UI texture V is downward — v=0 is the TOP of the texture,
  * matching the PNG's own top-to-bottom row storage directly. This is the
- * opposite of `letterTextureCrop` above (mesh V is upward/GL-style). Row 0
+ * opposite of `letterPlaneUvs` above (mesh V is upward/GL-style). Row 0
  * (A..H) maps straight onto row 0 here with NO flip — do not share a V
  * mapping between this and the mesh crop; that was tried and broke one or
  * the other depending on which direction was "fixed" last.
