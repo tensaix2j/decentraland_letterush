@@ -12,6 +12,7 @@ import {
   Material,
   MaterialTransparencyMode,
   MeshRenderer,
+  Name,
   TextureWrapMode,
   Transform,
   VisibilityComponent
@@ -226,15 +227,23 @@ const activeLetterIndex = new Map<Entity, number>()
  * testing confirmed both platforms actually want the SAME value now that
  * the thing that made them differ no longer applies.
  *
- * This function currently does nothing but mark itself done once
- * `getPlatform()` resolves — kept, rather than removed along with the two
- * corrections it used to make, because this exact pair of corrections has
- * already flipped between "platform-dependent" and "not" more than once
- * over the course of this project as the underlying rendering approach
- * changed. If a THIRD platform-specific quirk turns up, this is where it'd
- * go; `getPlatform()` still only resolves a few frames after scene start
- * (it's an async round trip to the runtime), which is why this stays a
- * polling system rather than a one-off check at module load.
+ * A THIRD instance of the exact same root cause turned up: the board's grid
+ * texture (gen-world.mjs's "Board Cells Base") is a single baked image on a
+ * STATIC composite-authored box, using that mesh's own default UV unwrap —
+ * unlike the letter decals, this is authored once at build time, not
+ * recreated at runtime, so it can't be moved to an explicit-UV plane the
+ * same way without hand-computing a whole-image crop for a composite entity
+ * (composites don't currently carry custom box/plane uvs in this project's
+ * generator). Real-device testing confirmed Unity Explorer renders it
+ * correctly as authored; Godot Explorer needs a further 180° turn (mobile
+ * confirmed — desktop/VR Godot presumably the same, since it's one
+ * codebase, though not separately tested). The composite is byte-identical
+ * for every client, so there's no way to bake a per-platform difference
+ * into it directly — this corrects it here at runtime instead, the same way
+ * the crop flip and board yaw used to work before they were unified away.
+ * Every composite entity carries a `Name` component (asserted by
+ * check-logic.mjs), which is how a specific composite-authored entity gets
+ * found from code at all here.
  */
 let platformFixDone = false
 function applyPlatformFixes(): void {
@@ -242,6 +251,16 @@ function applyPlatformFixes(): void {
   const platform = getPlatform()
   if (platform === null) return // not resolved yet — keep polling
   platformFixDone = true
+
+  const isUnity = platform === 'desktop'
+  if (!isUnity) {
+    for (const [entity, name] of engine.getEntitiesWith(Name)) {
+      if (name.value === 'Board Cells Base') {
+        Transform.getMutable(entity).rotation = Quaternion.fromEulerDegrees(0, 180, 0)
+        break
+      }
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -478,9 +497,9 @@ let beam: Entity | null = null
 let highlightCell = -2
 let highlightValid = false
 
-const OK_FILL = Color4.create(0.2, 1, 0.5, 0.55)
+const OK_FILL = Color4.create(0.2, 1, 0.5, 0.85)
 const OK_GLOW = Color4.create(0.2, 1, 0.5, 1)
-const BAD_FILL = Color4.create(1, 0.3, 0.25, 0.5)
+const BAD_FILL = Color4.create(1, 0.3, 0.25, 0.85)
 const BAD_GLOW = Color4.create(1, 0.3, 0.25, 1)
 
 /**
@@ -517,8 +536,8 @@ function paintHighlight(valid: boolean): void {
   })
   Material.setPbrMaterial(beam, {
     albedoColor: valid
-      ? Color4.create(0.2, 1, 0.5, 0.18)
-      : Color4.create(1, 0.3, 0.25, 0.16),
+      ? Color4.create(0.2, 1, 0.5, 0.45)
+      : Color4.create(1, 0.3, 0.25, 0.42),
     emissiveColor: valid ? OK_GLOW : BAD_GLOW,
     emissiveIntensity: 1.4,
     roughness: 1

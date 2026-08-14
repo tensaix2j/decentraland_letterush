@@ -63,8 +63,19 @@ export function cellAtPosition(pos: Vector3): number {
 
 /** How far outside the board edge still counts as "on" it, in cells. */
 const EDGE_TOLERANCE = 1.5
-/** How far the target may snap to find a legal cell, in cells. */
-const SNAP_RADIUS = 2
+/**
+ * How far the target may snap to find a legal cell, in cells.
+ *
+ * Was 2 (up to ~4 m, at BOARD_CELL_SIZE=2m, in any direction). The highlight
+ * pad + beam (view.ts's showHighlight) always renders at whatever cell this
+ * snaps to, so a radius of 2 could park the target visibly far from the
+ * player's actual feet whenever the cell directly underfoot wasn't legal —
+ * reported as the highlight feeling disconnected/confusing. 1 keeps the
+ * forgiving-placement behavior (still snaps off the exact square you're
+ * standing on) while keeping the snap to the immediate 8 neighbouring cells,
+ * so the highlight never strays far from where you're actually standing.
+ */
+const SNAP_RADIUS = 1
 
 export type Target = { cell: number; legal: boolean; reason: string }
 
