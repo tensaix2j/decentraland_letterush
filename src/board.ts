@@ -1,14 +1,23 @@
 /**
  * Board geometry and Scrabble rules.
  *
- * Placement is turn-based: `canPlace`/`targetCell` gate individual tiles as
- * they're staged (each one must touch the board — or a tile staged earlier
- * this same turn — orthogonally; the very first tile of a round must be the
- * centre star), but nothing is committed to the shared board yet. A whole
- * turn's staged tiles are validated together by `evaluateSubmission`: every
- * horizontal and vertical run of 2+ letters touching a newly staged cell is
- * collected, and if any one of them isn't a real word the ENTIRE submission
- * is rejected — the caller is expected to return every staged tile to the
+ * Placement is turn-based. `canStage`/`targetCell` gate individual tiles as
+ * they're staged — but ONLY for being on the board and empty, nothing more —
+ * so a whole word can be staged in any order, starting from either end.
+ * Nothing is committed to the shared board yet at this point.
+ *
+ * A whole turn's staged tiles are validated together, all at once, by
+ * `evaluateSubmission`: `isConnected` first confirms the finished shape
+ * actually links back to the existing board (or covers the centre star, if
+ * this is the first move of the round) — the deferred, order-independent
+ * replacement for what used to be a per-tile "must touch an already-placed
+ * tile" check at staging time (see `isConnected`'s own comment for why that
+ * was changed: it forced players to build outward in placement order,
+ * starting from the point of contact, which meant a 5-letter word ending on
+ * an existing tile had to be placed back-to-front). Then every horizontal
+ * and vertical run of 2+ letters touching a newly staged cell is collected,
+ * and if any one of them isn't a real word the ENTIRE submission is
+ * rejected — the caller is expected to return every staged tile to the
  * player's bag rather than commit anything. A run that IS a real word but was
  * already scored earlier this round still counts toward validity, it just
  * pays no additional points (stops a word being farmed by re-forming it).
@@ -83,10 +92,12 @@ export type Target = { cell: number; legal: boolean; reason: string }
  * The cell a placement should go to, given where the player is standing.
  *
  * Standing exactly on a 2 m square is fiddly with a touch joystick, so this
- * does not simply return the cell underfoot: if that one is illegal it searches
- * outward for the nearest legal cell within SNAP_RADIUS. That makes placement
- * forgiving on mobile without changing the rules — only legal cells are ever
- * returned as legal.
+ * does not simply return the cell underfoot: if that one is illegal (off the
+ * board, or already taken — see `canStage`) it searches outward for the
+ * nearest empty cell within SNAP_RADIUS. Now that staging no longer checks
+ * touch/connectivity, this snap mostly only matters for standing on an
+ * already-occupied cell; almost every other empty cell on the board is
+ * directly legal to stage on regardless of distance from anything else.
  */
 export function targetCell(pos: Vector3, cells: readonly number[]): Target {
   const rawCol = (pos.x - BOARD_X0) / BOARD_CELL_SIZE
@@ -107,7 +118,7 @@ export function targetCell(pos: Vector3, cells: readonly number[]): Target {
   const row = Math.min(BOARD_N - 1, Math.max(0, Math.floor(rawRow)))
   const under = indexOf(row, col)
 
-  const direct = canPlace(cells, under)
+  const direct = canStage(cells, under)
   if (direct.ok) return { cell: under, legal: true, reason: '' }
 
   let best = -1
@@ -119,7 +130,7 @@ export function targetCell(pos: Vector3, cells: readonly number[]): Target {
       const c = col + dc
       if (r < 0 || r >= BOARD_N || c < 0 || c >= BOARD_N) continue
       const candidate = indexOf(r, c)
-      if (!canPlace(cells, candidate).ok) continue
+      if (!canStage(cells, candidate).ok) continue
       // Distance from where the player actually is, not from the cell centre,
       // so the snap always picks the one they are closest to.
       const dx = rawCol - (c + 0.5)
@@ -155,22 +166,22 @@ export function isBoardEmpty(cells: readonly number[]): boolean {
 
 export type PlacementCheck = { ok: boolean; reason: string }
 
-export function canPlace(cells: readonly number[], index: number): PlacementCheck {
+/**
+ * Whether `index` is a legal cell to STAGE a tile onto — on the board and
+ * empty, nothing more. Used to be `canPlace`, and used to also require the
+ * cell touch an already-filled one (or be the centre star, on the board's
+ * first-ever placement). That per-tile check ran the instant each tile was
+ * staged, which meant it had to touch something that existed AT THAT MOMENT
+ * — forcing players to build outward in placement order, starting from
+ * whichever end touched the board. Connectivity (and the centre-star
+ * requirement) is now checked once, for the whole turn's placements
+ * together, at submit time — see `isConnected` — so staging itself only
+ * needs to rule out cells that are off the board or already taken.
+ */
+export function canStage(cells: readonly number[], index: number): PlacementCheck {
   if (index < 0 || index >= cells.length) return { ok: false, reason: 'Off the board' }
   if (cells[index] !== 0) return { ok: false, reason: 'Cell already taken' }
-  if (isBoardEmpty(cells)) {
-    return index === CENTER_CELL
-      ? { ok: true, reason: '' }
-      : { ok: false, reason: 'First tile must go on the centre star' }
-  }
-  const row = rowOf(index)
-  const col = colOf(index)
-  const touches =
-    (col > 0 && cells[index - 1] !== 0) ||
-    (col < BOARD_N - 1 && cells[index + 1] !== 0) ||
-    (row > 0 && cells[index - BOARD_N] !== 0) ||
-    (row < BOARD_N - 1 && cells[index + BOARD_N] !== 0)
-  return touches ? { ok: true, reason: '' } : { ok: false, reason: 'Must touch a placed tile' }
+  return { ok: true, reason: '' }
 }
 
 /** Overlay a set of not-yet-committed placements onto `cells`, without mutating it. */
@@ -258,6 +269,66 @@ function scoreRun(cells: readonly number[], run: Run, newCells: ReadonlySet<numb
 
 export type Placement = { cell: number; letter: number }
 
+/**
+ * Whether `placements`, taken together, connect back to the board as it
+ * stood before this turn — or, if the board was empty before this turn,
+ * whether they cover the centre star. This is the deferred, order-
+ * independent replacement for the old per-tile "must touch an already-
+ * placed tile" check that used to live in `canStage` (née `canPlace`).
+ *
+ * That old check ran the instant each tile was staged, so it had to touch
+ * something that existed AT THAT MOMENT — which forced players to build a
+ * word outward in placement order, starting from wherever it touched the
+ * board. A 5-letter word whose connection point was at the far end had to
+ * be placed back-to-front to satisfy it. Checking connectivity once, here,
+ * against the FINISHED shape instead of tile-by-tile as it's built, removes
+ * that ordering requirement while keeping the actual rule intact: a
+ * submission still has to connect to the existing board (or cover the
+ * centre, on the first move of the round) to be valid.
+ *
+ * Implementation: flood-fill outward from every pre-existing filled cell
+ * (or, if the board was empty before this turn, from the centre star alone)
+ * across the merged board, and confirm every newly placed cell was reached.
+ * This also correctly accepts a branching placement — e.g. a perpendicular
+ * word hung off a letter placed earlier in the same turn — since the flood
+ * fill walks through this turn's own new cells too, not just the old board.
+ */
+export function isConnected(cellsBeforeTurn: readonly number[], placements: readonly Placement[]): boolean {
+  if (placements.length === 0) return false
+  const merged = mergeStaged(cellsBeforeTurn, placements)
+  const newCells = new Set(placements.map((p) => p.cell))
+
+  const seeds: number[] = []
+  if (isBoardEmpty(cellsBeforeTurn)) {
+    if (!newCells.has(CENTER_CELL)) return false
+    seeds.push(CENTER_CELL)
+  } else {
+    for (let i = 0; i < cellsBeforeTurn.length; i++) if (cellsBeforeTurn[i] !== 0) seeds.push(i)
+  }
+
+  const seen = new Set<number>(seeds)
+  const queue = seeds.slice()
+  while (queue.length) {
+    const idx = queue.pop() as number
+    const row = rowOf(idx)
+    const col = colOf(idx)
+    const neighbours = [
+      col > 0 ? idx - 1 : -1,
+      col < BOARD_N - 1 ? idx + 1 : -1,
+      row > 0 ? idx - BOARD_N : -1,
+      row < BOARD_N - 1 ? idx + BOARD_N : -1
+    ]
+    for (const n of neighbours) {
+      if (n < 0 || seen.has(n) || merged[n] === 0) continue
+      seen.add(n)
+      queue.push(n)
+    }
+  }
+
+  for (const cell of newCells) if (!seen.has(cell)) return false
+  return true
+}
+
 export type SubmissionResult = {
   ok: boolean
   /** Why the submission was rejected — empty when ok is true. */
@@ -290,6 +361,10 @@ export function evaluateSubmission(
   alreadyScored: readonly number[]
 ): SubmissionResult {
   const reject = (reason: string): SubmissionResult => ({ ok: false, reason, points: 0, words: [], newRunKeys: [] })
+
+  if (!isConnected(cells, placements)) {
+    return reject(isBoardEmpty(cells) ? 'The first word must cover the centre star' : 'Tiles must connect to other word on the board')
+  }
 
   const merged = mergeStaged(cells, placements)
   const newCells = new Set(placements.map((p) => p.cell))

@@ -296,25 +296,80 @@ console.log('\nboard rules')
   const colOf = (i) => i % N
 
   const isEmpty = (cells) => cells.every((v) => v === 0)
-  const canPlace = (cells, index) => {
-    if (cells[index] !== 0) return false
-    if (isEmpty(cells)) return index === CENTER
-    const r = rowOf(index)
-    const c = colOf(index)
-    return (
-      (c > 0 && cells[index - 1] !== 0) ||
-      (c < N - 1 && cells[index + 1] !== 0) ||
-      (r > 0 && cells[index - N] !== 0) ||
-      (r < N - 1 && cells[index + N] !== 0)
-    )
+
+  // Mirrors src/board.ts's canStage: staging only cares whether a cell is on
+  // the board and empty. No touch/centre requirement here any more — that
+  // moved to isConnected below, checked once at submit time instead of
+  // per-tile as each one is staged.
+  const canStage = (cells, index) => {
+    if (index < 0 || index >= cells.length) return false
+    return cells[index] === 0
+  }
+
+  // Mirrors src/board.ts's isConnected: flood fill outward from every
+  // pre-existing filled cell (or the centre alone, if the board was empty
+  // before this turn) across the merged board, and confirm every newly
+  // staged cell was reached. The deferred, order-independent replacement for
+  // the old per-tile touch check — a word can now be staged starting from
+  // either end, as long as the FINISHED shape connects.
+  const isConnected = (cellsBeforeTurn, placements) => {
+    if (placements.length === 0) return false
+    const merged = cellsBeforeTurn.slice()
+    for (const p of placements) merged[p.cell] = p.letter
+    const newCells = new Set(placements.map((p) => p.cell))
+
+    const seeds = []
+    if (isEmpty(cellsBeforeTurn)) {
+      if (!newCells.has(CENTER)) return false
+      seeds.push(CENTER)
+    } else {
+      for (let i = 0; i < cellsBeforeTurn.length; i++) if (cellsBeforeTurn[i] !== 0) seeds.push(i)
+    }
+
+    const seen = new Set(seeds)
+    const queue = seeds.slice()
+    while (queue.length) {
+      const idx = queue.pop()
+      const r = rowOf(idx)
+      const c = colOf(idx)
+      const neighbours = [
+        c > 0 ? idx - 1 : -1,
+        c < N - 1 ? idx + 1 : -1,
+        r > 0 ? idx - N : -1,
+        r < N - 1 ? idx + N : -1
+      ]
+      for (const n of neighbours) {
+        if (n < 0 || seen.has(n) || merged[n] === 0) continue
+        seen.add(n)
+        queue.push(n)
+      }
+    }
+    for (const cell of newCells) if (!seen.has(cell)) return false
+    return true
   }
 
   const cells = new Array(N * N).fill(0)
-  check('first tile must be the centre', !canPlace(cells, 0) && canPlace(cells, CENTER))
+  check('staging no longer requires the centre (any empty cell is stageable)', canStage(cells, 0) && canStage(cells, CENTER))
+  check(
+    'first submission must still cover the centre star',
+    !isConnected(cells, [{ cell: 0, letter: 3 }]) && isConnected(cells, [{ cell: CENTER, letter: 3 }])
+  )
+  check(
+    'a 5-tile word can be staged starting from the far end (order-independent)',
+    isConnected(cells, [
+      { cell: CENTER + 4, letter: 20 },
+      { cell: CENTER + 3, letter: 1 },
+      { cell: CENTER + 2, letter: 1 },
+      { cell: CENTER + 1, letter: 1 },
+      { cell: CENTER, letter: 3 }
+    ])
+  )
+
   cells[CENTER] = 3 // C
-  check('adjacent cell is legal', canPlace(cells, CENTER + 1))
-  check('far cell is illegal', !canPlace(cells, CENTER + 5))
-  check('occupied cell is illegal', !canPlace(cells, CENTER))
+  check('occupied cell is not stageable', !canStage(cells, CENTER))
+  check('staging a far, disconnected cell is now allowed (connectivity is checked at submit instead)', canStage(cells, CENTER + 5))
+  check('adjacent placement connects to the board', isConnected(cells, [{ cell: CENTER + 1, letter: 1 }]))
+  check('far disconnected placement is rejected at submit time', !isConnected(cells, [{ cell: CENTER + 5, letter: 1 }]))
 
   // Build "CAT" horizontally from the centre and verify the run + score.
   cells[CENTER + 1] = 1 // A

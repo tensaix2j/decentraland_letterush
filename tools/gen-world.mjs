@@ -537,7 +537,7 @@ function buildCenter() {
   // primitive's `color` field allowed. The floating zone-name Sign is kept
   // for wayfinding, just repositioned to sit above the new arch height.
   const gates = [
-    { name: 'Gate North (Ice)', x: cx, z: z0 + BLOCK - 1.5, yaw: 0 },
+    { name: 'Gate North (Mountain)', x: cx, z: z0 + BLOCK - 1.5, yaw: 0 },
     { name: 'Gate South (Desert)', x: cx, z: z0 + 1.5, yaw: 0 },
     { name: 'Gate East (Jungle)', x: x0 + BLOCK - 1.5, z: cz, yaw: 90 },
     { name: 'Gate West (Foundry)', x: x0 + 1.5, z: cz, yaw: 90 }
