@@ -156,9 +156,15 @@ function build(): Theme {
         virtualWidth,
         virtualHeight,
         insets,
-        font: { tiny: 15, small: 18, body: 22, title: 24, clock: 46, banner: 64 },
+        // banner cut 40% (64 -> 38) per explicit user request — "NO WINNER
+        // THIS ROUND" was rendering way too big.
+        font: { tiny: 15, small: 18, body: 22, title: 24, clock: 46, banner: 38 },
         slot: 82,
-        mobileBagSlot: 74,
+        // Cut ~30% (74 -> 52) per explicit user request — also now used as
+        // BOTH width and height in MobileBagRow (square slots), not just
+        // height with a flex-computed width, so this single number is the
+        // whole slot size now.
+        mobileBagSlot: 52,
         button: { height: 92, width: 210, font: 30 },
         panelPad: 14,
         gap: 8,
@@ -169,6 +175,9 @@ function build(): Theme {
         virtualWidth,
         virtualHeight,
         insets,
+        // Desktop unaffected — every recent HUD tweak in this file (banner
+        // size, clock reposition, leaderboard, bag slots) is mobile-only per
+        // explicit user request. Desktop's own font sizes stay untouched.
         font: { tiny: 13, small: 15, body: 18, title: 20, clock: 40, banner: 56 },
         slot: 62,
         mobileBagSlot: 62,

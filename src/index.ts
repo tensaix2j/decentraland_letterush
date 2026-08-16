@@ -23,6 +23,7 @@ import { setupPerformance, snapshotDecor } from './perf'
 import { quality } from './platform'
 import { getRound } from './state'
 import { setupSfx } from './sfx'
+import { setupBgm } from './bgm'
 import { setupAnalytics } from './analytics'
 
 let lastRenderedRound = -1
@@ -44,6 +45,7 @@ export function main(): void {
   const bus = new MessageBus()
 
   setupSfx()
+  setupBgm()
   setupTileVisuals()
   setupHighlight()
   setupTileInteractions(bus)

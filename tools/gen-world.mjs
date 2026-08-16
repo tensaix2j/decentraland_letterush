@@ -389,6 +389,21 @@ const fixedLetterAnchors = []
 const addFixedLetterAnchor = (zone, letter, x, y, z) =>
   fixedLetterAnchors.push({ zone, letter, pos: [r3(x), r3(y + 1.0), r3(z)] })
 
+/**
+ * Spawn points that must ALWAYS hold a tile, every round — unlike the
+ * regular `anchors` pool (which is just eligible for the random
+ * zone-cursor/free-anchor picker, so it might go a while without a tile
+ * actually landing there), these get a dedicated reserved tile entity, same
+ * mechanism as fixedLetterAnchors above, except the letter is drawn at
+ * random each time rather than fixed. Written to layout.ts as
+ * GUARANTEED_SPAWNS; host.ts reserves one dedicated tileEntities index per
+ * entry, placed immediately at the start of every round and respawned
+ * immediately (not through the batched spawnTiles() cycle) whenever
+ * collected.
+ */
+const guaranteedSpawns = []
+const addGuaranteedSpawn = (zone, x, y, z) => guaranteedSpawns.push({ zone, pos: [r3(x), r3(y + 1.0), r3(z)] })
+
 /* ================================================================== *
  * CENTER — Aztec plaza + 21x21 Scrabble board
  * ================================================================== */
@@ -540,7 +555,7 @@ function buildCenter() {
     { name: 'Gate North (Mountain)', x: cx, z: z0 + BLOCK - 1.5, yaw: 0 },
     { name: 'Gate South (Desert)', x: cx, z: z0 + 1.5, yaw: 0 },
     { name: 'Gate East (Jungle)', x: x0 + BLOCK - 1.5, z: cz, yaw: 90 },
-    { name: 'Gate West (Foundry)', x: x0 + 1.5, z: cz, yaw: 90 }
+    { name: 'Gate West (Fortress)', x: x0 + 1.5, z: cz, yaw: 90 }
   ]
   const archScale = ARCH_TARGET_HEIGHT / ARCH_NATIVE_HEIGHT
   for (const g of gates) {
@@ -718,6 +733,22 @@ function buildEast() {
     }
   }
 
+  // Forced spawns supplied directly by the user (exact final world-space
+  // positions, verified reachable by them in-client) — must ALWAYS have a
+  // tile every round, so these use addGuaranteedSpawn (reserved tile slot,
+  // same mechanism as the SOUTH pyramid's fixed Q/Z letters) rather than the
+  // regular addAnchor pool the maze-passage loop above uses. Same -1.0 m
+  // correction, to cancel addGuaranteedSpawn's own +1.0 m pickup clearance
+  // and land exactly where specified.
+  const EAST_GUARANTEED_TILE_SPAWNS = [
+    [156, 0.5, 100],
+    [183, 0.5, 101],
+    [174, 0.5, 73]
+  ]
+  for (const [px, py, pz] of EAST_GUARANTEED_TILE_SPAWNS) {
+    addGuaranteedSpawn('EAST', px, py - 1.0, pz)
+  }
+
   // Canopy trees around the maze perimeter — 3 hand-placed GLB variants
   // (TREE_MODELS, above), replacing the old trunk-cylinder + canopy-sphere
   // primitive pair. Unconditional/required, same treatment as the plaza's
@@ -768,51 +799,6 @@ function buildEast() {
 }
 
 /**
- * assets/models/pipe.glb replaces the primitive cylinder "Pipe Run" props.
- * Measured with its own baked node rotation applied (like the trees'
- * translation, this model bakes a -90° X rotation into its single node, so
- * ignoring it would measure the wrong axis as "length"): native length
- * (world Y with that baked rotation applied) is 1.9852m, cross-section
- * diameter 1.8398m, base sitting at minY = -0.0144 (negligible — base-
- * anchored, same as the trees/mountains/pine). Ships its own
- * "Cylinder_collider" node, but unlike the pyramid/mountains this needs an
- * explicit `invisibleMeshesCollisionMask: 0` — the ORIGINAL primitive pipes
- * were deliberately non-collidable (background piping you can walk through,
- * not a hazard), and a model's own collider node defaults to collidable.
- */
-const PIPE_MODEL_SRC = 'assets/models/pipe.glb'
-const PIPE_NATIVE_LENGTH = 1.9852
-const PIPE_NATIVE_DIAMETER = 1.8398
-if (!existsSync(resolve(ROOT, PIPE_MODEL_SRC))) {
-  throw new Error(`Missing ${PIPE_MODEL_SRC} — the Foundry's pipe runs need this model.`)
-}
-
-/**
- * Place a pipe segment `length` metres long at `[px, py, pz]` (py = the end
- * nearest the model's own base pivot), upright if `!horizontal`, laid on its
- * side if `horizontal`. `diameterX`/`diameterZ` default to the old thin pipe
- * width (~0.8m); pass larger, independent values for a fat vertical "pillar"
- * use like the Silos below. `collidable` defaults to true (the model's own
- * collider node collides by default) — pass false for background piping you
- * should be able to walk through, matching what the thin pipe runs did.
- */
-function addPipe(px, py, pz, length, horizontal, diameterX = 0.8, diameterZ = diameterX, collidable = true) {
-  const lengthScale = length / PIPE_NATIVE_LENGTH
-  const id = add({
-    name: 'Pipe Run',
-    pos: [px, py, pz],
-    scale: [diameterX / PIPE_NATIVE_DIAMETER, lengthScale, diameterZ / PIPE_NATIVE_DIAMETER],
-    rot: horizontal ? eulerQuat(0, 0, 90) : IDENTITY_ROT,
-    mesh: 'none',
-    collider: 0
-  })
-  gltfContainers[id] = collidable
-    ? { json: { src: PIPE_MODEL_SRC } }
-    : { json: { src: PIPE_MODEL_SRC, invisibleMeshesCollisionMask: 0 } }
-  return id
-}
-
-/**
  * assets/models/platform_1.glb replaces the "Catwalk Platform" and "Moving
  * Platform" primitives. Unlike platform_0 (used in the ice zone, pivoted at
  * its TOP surface per the user), this one measures base-anchored: minY = 0
@@ -846,32 +832,38 @@ function addFoundryPlatform(px, baseY, pz, widthX, widthZ, thickness, extra = {}
 }
 
 /**
- * assets/models/crate.glb replaces the "Steel Crate" primitive stacks. Per
- * the user: a unit (1x1x1) box, pivoted at its base centre, with its own
- * "*_collider" node — so, same convention as the pyramid/mountains/pipes, no
- * explicit collision mask is needed.
+ * assets/models/fortress.glb — a medieval "wonder"-style castle, added as
+ * the West zone's new landmark base (per explicit user decision to retheme
+ * this zone from industrial to medieval; the existing "Foundry" walls/floor/
+ * naming below are UNCHANGED for now — not part of that request).
+ *
+ * Measured via the model's own glTF node transforms: local bounds are
+ * X[-42.2091, 42.2091], Y[-2.9163, 56.8868], Z[-35.9061, 36.1903] — a
+ * native footprint of 84.4 x 72.1 m and a height of 59.8 m.
+ *
+ * That footprint does NOT fit the 64x64 m zone at native scale (84.4 m wide
+ * alone already overflows a 64 m block, and centring it would push past
+ * x=0, off the world entirely). FORTRESS_SCALE instead targets a 54 m
+ * footprint width — comfortable clearance from the existing perimeter walls
+ * — which brings the height down to ~38 m in the process, since this is a
+ * single uniform scale (not stretched per-axis, to avoid distorting the
+ * model). X is already centred in the model's local space (min/max are
+ * symmetric); Z is not quite (local centre sits at +0.1421, not 0) — both
+ * are corrected for at placement time below.
  */
-const CRATE_MODEL_SRC = 'assets/models/crate.glb'
-if (!existsSync(resolve(ROOT, CRATE_MODEL_SRC))) {
-  throw new Error(`Missing ${CRATE_MODEL_SRC} — the Foundry's crate stacks need this model.`)
-}
-
-/** Place a crate with its base at `baseY`, `size` metres per side (uniform — it's a cube). Extra `add()` fields (e.g. rot) merge in via `extra`. */
-function addCrate(px, baseY, pz, size, extra = {}) {
-  const id = add({
-    name: 'Steel Crate',
-    pos: [px, baseY, pz],
-    scale: [size, size, size],
-    mesh: 'none',
-    collider: 0,
-    ...extra
-  })
-  gltfContainers[id] = { json: { src: CRATE_MODEL_SRC } }
-  return id
+const FORTRESS_MODEL_SRC = 'assets/models/fortress.glb'
+const FORTRESS_NATIVE_WIDTH = 84.4182
+const FORTRESS_MIN_Y = -2.9163
+const FORTRESS_Z_CENTRE_OFFSET = 0.1421
+const FORTRESS_TARGET_WIDTH = 54
+const FORTRESS_SCALE = FORTRESS_TARGET_WIDTH / FORTRESS_NATIVE_WIDTH
+if (!existsSync(resolve(ROOT, FORTRESS_MODEL_SRC))) {
+  throw new Error(`Missing ${FORTRESS_MODEL_SRC} — the West zone's landmark needs this model.`)
 }
 
 /* ================================================================== *
- * WEST — Industrial parkour
+ * WEST — Industrial parkour (retheming to medieval in progress — see
+ * FORTRESS_MODEL_SRC above; walls/floor/naming below still read "Foundry")
  * ================================================================== */
 function buildWest() {
   const { x0, z0 } = ZONES.WEST
@@ -879,28 +871,87 @@ function buildWest() {
   const cz = z0 + BLOCK / 2
   slab('Foundry Floor', cx, cz, BLOCK, BLOCK, 0.05, C.indGround, 0.5)
 
-  // Perimeter factory walls
-  const wallH = 16
-  const sides = [
-    [cx, z0 + 0.6, BLOCK, 1.2],
-    [cx, z0 + BLOCK - 0.6, BLOCK, 1.2],
-    [x0 + 0.6, cz, 1.2, BLOCK]
+  // Fortress landmark — see FORTRESS_MODEL_SRC's own comment for the sizing
+  // trade-off (54 m footprint, ~38 m tall as a result of fitting that
+  // footprint with one uniform scale).
+  //
+  // fortressY is pinned to 0 per explicit user request. The floor slab's top
+  // surface sits at y=0.05, and the model's own local minY (-2.9163, scaled
+  // by FORTRESS_SCALE) is about -1.865 — so at y=0 the fortress's visible
+  // base sits roughly 1.865 m below the floor, not flush with it.
+  const fortressX = cx
+  const fortressY = 0
+  const fortressZ = cz - FORTRESS_Z_CENTRE_OFFSET * FORTRESS_SCALE
+  const fortressId = add({
+    name: 'Fortress',
+    pos: [fortressX, fortressY, fortressZ],
+    scale: [FORTRESS_SCALE, FORTRESS_SCALE, FORTRESS_SCALE],
+    rot: IDENTITY_ROT,
+    mesh: 'none',
+    collider: 0
+  })
+  gltfContainers[fortressId] = { json: { src: FORTRESS_MODEL_SRC, visibleMeshesCollisionMask: 3 } }
+
+  // A prior pass added 6 more tile spawns up an "interior staircase" it
+  // thought it found by parsing the glTF's mesh bounding boxes — removed per
+  // explicit user report that tiles were spawning unreachable, underneath
+  // the fortress stairs / inside its walls. That guess was never visually
+  // confirmed as open interior space, only inferred from bounding-box shapes
+  // stacked in Y — exactly the kind of thing that goes wrong without eyes on
+  // the actual render. Only the user-supplied coordinates below (which they
+  // tested themselves) remain.
+
+  // Extra fortress spawn points supplied directly by the user (world-space
+  // coordinates they found reachable, presumably by walking the model
+  // in-client). Given as the exact spot the tile should appear, so — unlike
+  // the two loops above, which hand addAnchor a raw floor Y — these get a
+  // -1.0 m correction to cancel out addAnchor's own +1.0 m pickup clearance
+  // and land exactly where specified.
+  const FORTRESS_USER_TILE_SPAWNS = [
+    [11, 22, 118],
+    [32, 15, 118],
+    [53, 15, 119],
+    [53, 15, 104],
+    [53, 15, 88],
+    [53, 15, 73],
+    [11, 22, 73],
+    [32, 15, 73],
+    [11, 11, 97],
+    [21, 11, 73]
   ]
-  for (const [px, pz, sx, sz] of sides) {
-    add({
-      name: 'Foundry Wall',
-      pos: [px, wallH / 2 + 0.05, pz],
-      scale: [sx, wallH, sz],
-      color: C.indSteelDark,
-      metallic: 0.5,
-      roughness: 0.6,
-      collider: 3
-    })
+  for (const [px, py, pz] of FORTRESS_USER_TILE_SPAWNS) {
+    addAnchor('WEST', px, py - 1.0, pz)
   }
+
+  // Second batch of user-supplied fortress spots, added later with the
+  // explicit requirement that these ALWAYS have a tile every round — a
+  // stronger guarantee than the regular pool above (which is only
+  // eligible for the random anchor picker, so it might sit empty a while).
+  // Uses addGuaranteedSpawn, not addAnchor: reserved tileEntities slots in
+  // host.ts, same mechanism as the SOUTH pyramid's fixed Q/Z letters.
+  const WEST_GUARANTEED_TILE_SPAWNS = [
+    [13, 27, 100],
+    [47, 30, 77],
+    [54, 15, 88]
+  ]
+  for (const [px, py, pz] of WEST_GUARANTEED_TILE_SPAWNS) {
+    addGuaranteedSpawn('WEST', px, py - 1.0, pz)
+  }
+
+  // Perimeter factory walls — removed per explicit user request (the dark
+  // steel-blue "Foundry Wall" boxes no longer fit the medieval retheme).
+
+  // Both the static climb below and the moving platforms further down share
+  // this same lift. Raised 1.5 m per explicit user request from the +15 m
+  // that put the course roughly level with the fortress's upper-middle
+  // (~36.4 m roofline above y=0 — see FORTRESS_MODEL_SRC's comment for the
+  // native-height math). At +16.5 m the static course runs 18.1-30 m and the
+  // moving platforms 19.5-32.5 m.
+  const MOVING_PLATFORM_LIFT = 16.5
 
   // Ascending platform course, four spiralling tiers
   const PLATFORM_COUNT = 14
-  let y = 1.6
+  let y = 1.6 + MOVING_PLATFORM_LIFT
   let ang = rf(0, Math.PI * 2)
   let radius = 8
   for (let i = 0; i < PLATFORM_COUNT; i++) {
@@ -919,11 +970,22 @@ function buildWest() {
     addAnchor('WEST', px, y + 0.2, pz)
   }
 
-  // Moving platforms (Tween ping-pong) between tiers
+  // Moving platforms (Tween ping-pong) between tiers.
+  //
+  // MOVING_PLATFORM_LIFT applied on top of the original 3 + i*2.6 heights
+  // (3-16 m) puts these at 19.5-32.5 m.
+  //
+  // These are exactly the kind of spot the user singled out as the BEST tile
+  // spawns — guaranteed reachable, since reaching them is the whole point of
+  // the climb, unlike a guessed interior coordinate. Anchor is at the
+  // platform's STARTING position (px, pz), matching the static tier loop
+  // above; the platform itself still tweens out from under it once spawned,
+  // same as any other anchor here (none of them are entity-parented to
+  // what's under them).
   for (let i = 0; i < 6; i++) {
     const px = rf(x0 + 10, x0 + BLOCK - 10)
     const pz = rf(z0 + 10, z0 + BLOCK - 10)
-    const py = 3 + i * 2.6
+    const py = 3 + i * 2.6 + MOVING_PLATFORM_LIFT
     const dx = rf(6, 11)
     const baseY = py - 0.2 // base-anchored model — see the Catwalk Platform loop above
     addFoundryPlatform(px, baseY, pz, 3.4, 3.4, 0.4, {
@@ -941,39 +1003,21 @@ function buildWest() {
       },
       tweenSequence: { sequence: [], loop: 1 } // TL_YOYO
     })
+    addAnchor('WEST', px, py + 0.2, pz)
   }
 
-  // Silos ("big pillars") — fat, collidable pipe.glb, ground-anchored.
-  // Base-anchored model, so pos.y is ground level (0.05) directly rather
-  // than the old primitive's centre-based h/2 + 0.05.
+  // Silos ("big pillars", pipe.glb) — removed per explicit user request
+  // (retheming to medieval; industrial pipes no longer fit). This was the
+  // last remaining use of pipe.glb in the West zone — the earlier "thin
+  // background pipe runs" were already removed in an prior pass. Also drops
+  // 6 tile-spawn anchors that used to sit on top of these; not replaced
+  // here since it wasn't asked for, but worth knowing WEST's anchor count
+  // just went down as a side effect.
   //
-  // The thin, randomly-horizontal-or-vertical "background pipe runs" that
-  // used to be scattered here at floating heights (rf(2, 14), no ground
-  // anchoring) were removed per the user — cluttered/ugly, especially the
-  // horizontal skinny ones hanging in mid-air. Only these big vertical Silos
-  // remain.
-  for (let i = 0; i < 6; i++) {
-    const px = rf(x0 + 5, x0 + BLOCK - 5)
-    const pz = rf(z0 + 5, z0 + BLOCK - 5)
-    const h = rf(9, 20)
-    const diaX = rf(3.5, 6)
-    const diaZ = rf(3.5, 6)
-    addPipe(px, 0.05, pz, h, false, diaX, diaZ)
-    addAnchor('WEST', px, h + 0.1, pz)
-  }
-  // Crate stacks (climbable)
-  for (let i = 0; i < 5; i++) {
-    const px = rf(x0 + 4, x0 + BLOCK - 4)
-    const pz = rf(z0 + 4, z0 + BLOCK - 4)
-    const stack = ri(1, 3)
-    for (let s = 0; s < stack; s++) {
-      // Base-anchored model, so the base sits directly at s * 1.7 (each
-      // crate is 1.7m tall) rather than the old centre-pivoted primitive's
-      // 0.85 + s * 1.7.
-      addCrate(px + rf(-0.3, 0.3), s * 1.7, pz + rf(-0.3, 0.3), 1.7, { rot: yawQuat(rf(0, 90)) })
-    }
-    addAnchor('WEST', px, 0.85 + stack * 1.7, pz)
-  }
+  // Crate stacks (climbable) — also removed per explicit user request
+  // (retheming to medieval; crate.glb no longer fits). Was the last
+  // remaining use of crate.glb/addCrate in the file, so that function and
+  // CRATE_MODEL_SRC were deleted too. Drops another 5 tile-spawn anchors.
 }
 
 /**
@@ -1204,6 +1248,13 @@ function buildSouth() {
   // the real uphill tunnel's deepest point, reported directly from in-world
   // testing rather than re-derived from the model.
   addFixedLetterAnchor('SOUTH', 'Z', 107, 10.3, 40)
+
+  // Forced spawn supplied directly by the user (exact final world-space
+  // position) — must ALWAYS have a tile every round, so this uses
+  // addGuaranteedSpawn (reserved tile slot) rather than the mesh-derived
+  // addAnchor loops above. Same -1.0 m correction to cancel the internal
+  // +1.0 m pickup clearance.
+  addGuaranteedSpawn('SOUTH', 96, 0.2 - 1.0, 46)
 }
 
 /**
@@ -1492,6 +1543,23 @@ function buildNorth() {
   for (let i = 0; i < 7; i++) {
     addRock(rf(x0 + 3, x0 + BLOCK - 3), rf(z0 + 3, z0 + BLOCK - 12), 0.05, rf(1.6, 3))
   }
+
+  // Forced spawns supplied directly by the user (exact final world-space
+  // positions) — must ALWAYS have a tile every round, so these use
+  // addGuaranteedSpawn (reserved tile slot) rather than the regular
+  // addAnchor pool the floe/disc loops above use.
+  //
+  // (107, 137, 146) was a decimal-point typo, corrected first to (107, 13.7,
+  // 146) then bumped to (107, 15, 146) per explicit follow-up — both sit in
+  // the floe course's height range; 137 never did.
+  const NORTH_GUARANTEED_TILE_SPAWNS = [
+    [115, 23, 166],
+    [85, 11, 136],
+    [107, 15, 146]
+  ]
+  for (const [px, py, pz] of NORTH_GUARANTEED_TILE_SPAWNS) {
+    addGuaranteedSpawn('NORTH', px, py - 1.0, pz)
+  }
 }
 
 /* ================================================================== *
@@ -1680,7 +1748,7 @@ export const ZONE_LABEL: Record<ZoneName, string> = {
   NORTH: 'Frozen Peaks',
   SOUTH: 'Sunken Tomb',
   EAST: 'Jungle Labyrinth',
-  WEST: 'The Foundry'
+  WEST: 'Fortress'
 }
 
 /** Candidate tile spawn positions (already offset ~1 m above the surface). */
@@ -1694,6 +1762,11 @@ export const TILE_ANCHORS: Record<ZoneName, [number, number, number][]> = {
 /** Landmark spawn points that always hold the same letter (see gen-world.mjs's
  * addFixedLetterAnchor) — host.ts pins one dedicated tile entity per entry. */
 export const FIXED_LETTER_ANCHORS: { zone: ZoneName; letter: string; pos: [number, number, number] }[] = ${JSON.stringify(fixedLetterAnchors)}
+
+/** Spawn points that must always hold SOME tile (random letter) every round —
+ * see gen-world.mjs's addGuaranteedSpawn. host.ts reserves one dedicated
+ * tile entity per entry, same mechanism as FIXED_LETTER_ANCHORS above. */
+export const GUARANTEED_SPAWNS: { zone: ZoneName; pos: [number, number, number] }[] = ${JSON.stringify(guaranteedSpawns)}
 
 /** Premium multiplier map, one entry per board cell (0 normal, 1 DL, 2 TL, 3 DW, 4 TW, 5 star). */
 export const CELL_PREMIUM: number[] = ${JSON.stringify(

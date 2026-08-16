@@ -4,7 +4,8 @@
  *   - the round clock and the 10-minute reset
  *   - topping the world back up to MAX_TILES tiles every 60 s
  *   - applying board placements and awarding points
- *   - reclaiming tiles held by players who disconnected
+ *   - reclaiming tiles held by players who disconnected, and tiles sitting
+ *     uncollected in the world too long (see STALE_WORLD_MS)
  */
 
 import { Transform } from '@dcl/sdk/ecs'
@@ -26,6 +27,7 @@ import {
   ROUND_LENGTH_MS,
   SPAWN_BATCH,
   SPAWN_INTERVAL_MS,
+  STALE_WORLD_MS,
   TileStatus,
   ToastMessage
 } from './config'
@@ -35,6 +37,7 @@ import {
   BOARD_N,
   BOARD_CELL_SIZE,
   FIXED_LETTER_ANCHORS,
+  GUARANTEED_SPAWNS,
   TILE_ANCHORS,
   ZONE_NAMES,
   ZoneName
@@ -143,6 +146,10 @@ function startRound(roundId: number, now: number): void {
   // every round, not just "eventually" a few seconds in.
   for (let i = 0; i < FIXED_LETTER_ANCHORS.length; i++) placePinnedTile(i, now, roundId)
 
+  // Guaranteed-spawn spots — same immediate treatment, explicitly required
+  // to always have a tile from the moment a round starts.
+  for (let i = 0; i < GUARANTEED_SPAWNS.length; i++) placeGuaranteedTile(i, now, roundId)
+
   // DEBUG ONLY — remove when done debugging. Drops 3 easy, always-available
   // pickup tiles just north of the board (past its top edge) so there's no
   // need to trek out to a zone every time the round resets while testing.
@@ -228,6 +235,40 @@ function placePinnedTile(i: number, now: number, roundId?: number): void {
   state.updatedAt = now
 }
 
+/**
+ * Guaranteed-spawn spots (see gen-world.mjs's addGuaranteedSpawn) reserve the
+ * `GUARANTEED_SPAWNS.length` slots immediately BEFORE the fixed-letter block
+ * above — same idea (a dedicated tile entity permanently tied to one spot),
+ * except the letter is drawn fresh each placement instead of fixed. These
+ * exist for spots the user has explicitly required to always have a tile,
+ * not just be eligible for the random zone/anchor picker like the ordinary
+ * `anchors` pool.
+ */
+function guaranteedTileIndex(i: number): number {
+  return tileEntities.length - FIXED_LETTER_ANCHORS.length - GUARANTEED_SPAWNS.length + i
+}
+
+/** Which GUARANTEED_SPAWNS entry `index` is reserved for, or -1 if it isn't one. */
+function guaranteedAnchorIndexFor(index: number): number {
+  const start = tileEntities.length - FIXED_LETTER_ANCHORS.length - GUARANTEED_SPAWNS.length
+  const end = tileEntities.length - FIXED_LETTER_ANCHORS.length
+  return index >= start && index < end ? index - start : -1
+}
+
+/** Place guaranteed-spawn `i` at its designated spot, in the world, right now, with a freshly drawn letter.
+ * `roundId` is omitted (left untouched) for the reclaim case, matching placePinnedTile. */
+function placeGuaranteedTile(i: number, now: number, roundId?: number): void {
+  const spot = GUARANTEED_SPAWNS[i]
+  const tile = tileEntities[guaranteedTileIndex(i)]
+  Transform.getMutable(tile).position = Vector3.create(spot.pos[0], spot.pos[1], spot.pos[2])
+  const state = TileState.getMutable(tile)
+  state.letter = drawLetter()
+  state.status = TileStatus.IN_WORLD
+  state.holder = ''
+  if (roundId !== undefined) state.roundId = roundId
+  state.updatedAt = now
+}
+
 // Big enough to cover the +/-0.3 m spawn jitter on both the existing tile and
 // the new one, so two tiles can never end up close enough to visually overlap
 // even if they land at slightly different anchors.
@@ -283,6 +324,16 @@ function spawnTiles(): void {
       continue
     }
 
+    // A guaranteed-spawn spot that got picked up and submitted/consumed —
+    // same immediate-return treatment, fresh random letter.
+    const guaranteed = guaranteedAnchorIndexFor(index)
+    if (guaranteed !== -1) {
+      placeGuaranteedTile(guaranteed, now, round.roundId)
+      const spot = GUARANTEED_SPAWNS[guaranteed]
+      occupied.push([spot.pos[0], spot.pos[2]])
+      continue
+    }
+
     const zone = ZONE_NAMES[zoneCursor % ZONE_NAMES.length] as ZoneName
     zoneCursor++
     if (!TILE_ANCHORS[zone].length) continue
@@ -303,25 +354,46 @@ function spawnTiles(): void {
   }
 }
 
-/** Return tiles to the wild when their holder is no longer in the scene. */
+/**
+ * Return tiles to the wild when their holder is no longer in the scene, AND
+ * re-anchor tiles that have sat IN_WORLD uncollected too long (see
+ * STALE_WORLD_MS's own comment in config.ts — this is what stops a tile
+ * dropped somewhere unreachable from squatting on the MAX_TILES budget for
+ * the rest of the round).
+ */
 function reclaimAbandonedTiles(now: number): void {
   const present = connectedAddresses()
   const occupied = liveTilePositions()
   for (let index = 0; index < tileEntities.length; index++) {
     const tile = tileEntities[index]
     const state = TileState.getOrNull(tile)
-    if (!state || state.status !== TileStatus.HELD) continue
-    if (present.indexOf(state.holder) !== -1) continue
-    if (now - state.updatedAt < ABANDON_MS) continue
+    if (!state) continue
 
-    // A fixed-letter landmark abandoned by whoever carried it off — back to
-    // its own spot, not a random zone (never touches roundId here, matching
-    // what this function already did for ordinary tiles below).
+    const heldAbandoned =
+      state.status === TileStatus.HELD &&
+      present.indexOf(state.holder) === -1 &&
+      now - state.updatedAt >= ABANDON_MS
+    const worldStale = state.status === TileStatus.IN_WORLD && now - state.updatedAt >= STALE_WORLD_MS
+    if (!heldAbandoned && !worldStale) continue
+
+    // A fixed-letter landmark abandoned/stale — back to its own spot, not a
+    // random zone (never touches roundId here, matching what this function
+    // already did for ordinary tiles below).
     const pinned = pinnedAnchorIndexFor(index)
     if (pinned !== -1) {
       placePinnedTile(pinned, now)
       const fixed = FIXED_LETTER_ANCHORS[pinned]
       occupied.push([fixed.pos[0], fixed.pos[2]])
+      continue
+    }
+
+    // A guaranteed-spawn spot abandoned/stale — same treatment, back to its
+    // own fixed position with a fresh letter.
+    const guaranteed = guaranteedAnchorIndexFor(index)
+    if (guaranteed !== -1) {
+      placeGuaranteedTile(guaranteed, now)
+      const spot = GUARANTEED_SPAWNS[guaranteed]
+      occupied.push([spot.pos[0], spot.pos[2]])
       continue
     }
 

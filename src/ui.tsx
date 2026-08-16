@@ -56,46 +56,16 @@ function clock(msRemaining: number): string {
  * Shared pieces
  * ------------------------------------------------------------------ */
 
+/**
+ * Desktop only now — mobile's round number moved into MobileClock (rendered
+ * right next to the countdown, top-centre) and the clock moved out into its
+ * own MobileClock component, so mobile no longer calls this at all.
+ */
 function StatusPanel(props: { t: Theme }) {
   const t = props.t
   const round = getRound()
   const remaining = round && round.endsAt ? round.endsAt - Date.now() : 0
   const label = round && round.endsAt ? clock(remaining) : '--:--'
-
-  if (t.mobile) {
-    // One compact strip; a phone has no room for a boxed panel. No backing
-    // plate at all — the outline on the glyphs is what keeps the clock legible
-    // over whatever the world happens to be behind it, and it reads cleaner
-    // than a black rectangle floating in the corner.
-    return (
-      <UiEntity
-        uiTransform={{
-          height: 46,
-          flexDirection: 'row',
-          alignItems: 'center',
-          padding: { left: 12, right: 12 },
-          margin: { top: 8 }
-        }}
-      >
-        <OutlinedLabel
-          value={label}
-          fontSize={t.font.clock}
-          color={TEXT}
-          width={140}
-          height={44}
-          textAlign="middle-left"
-        />
-        <OutlinedLabel
-          value={`R${round ? round.roundId : '-'}`}
-          fontSize={t.font.tiny}
-          color={MUTED}
-          width={60}
-          height={40}
-          textAlign="middle-left"
-        />
-      </UiEntity>
-    )
-  }
 
   return (
     <UiEntity
@@ -143,15 +113,80 @@ function StatusPanel(props: { t: Theme }) {
 }
 
 /**
- * Extra drop for the mobile leaderboard, as a fraction of the top inset.
+ * Mobile-only: the countdown clock plus the round-number chip, standalone and
+ * centred top as one unit — the chip sits just to the clock's right, rather
+ * than either sharing the old top-left StatusPanel strip or stacking with the
+ * leaderboard on the right.
  *
- * The explorer's own profile/eye icons sit in the top-right corner and were
- * still clipping the panel even after the inset floor in platform.ts. Scaling
- * the nudge off `insets.top` rather than using a fixed pixel count keeps it
- * proportional: the icons occupy roughly a constant share of screen height,
- * so this stays correct in portrait and landscape and across device sizes.
+ * Added per explicit user request working around an SDK7 7.26.0 (15 Aug)
+ * regression that broke this HUD's mobile Godot layout — desktop Unity was
+ * unaffected. positionType 'absolute' takes it out of MobileUi's
+ * space-between flow entirely, so it can't be shoved around by the
+ * leaderboard/bag rows the way an in-flow element sharing that layout would.
  */
-const LEADERBOARD_DROP_FRACTION = 0.4
+// 0, not t.insets.top: on-device, insets.top is coming back far bigger than
+// the 18% floor in platform.ts expects (observed pushing this down to roughly
+// a third of the screen height, overlapping the avatar nametag). The avatar/
+// system icon cluster lives in the top-left corner only, so this horizontally
+// centred element doesn't need any clearance margin from it at all — flush
+// against the true top edge of the canvas.
+const MOBILE_CLOCK_TOP = 0
+
+/**
+ * Small fixed safe-area margins used instead of t.insets.* for MobileUi's
+ * space-between column — see that padding's own comment for why insets can't
+ * be trusted here.
+ */
+const MOBILE_TOP_MARGIN = 16
+const MOBILE_BOTTOM_MARGIN = 16
+const MOBILE_SIDE_MARGIN = 12
+
+function MobileClock(props: { t: Theme }) {
+  const t = props.t
+  const round = getRound()
+  const remaining = round && round.endsAt ? round.endsAt - Date.now() : 0
+  const label = round && round.endsAt ? clock(remaining) : '--:--'
+  return (
+    <UiEntity
+      uiTransform={{
+        positionType: 'absolute',
+        position: { top: MOBILE_CLOCK_TOP },
+        width: '100%',
+        height: 46,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }}
+    >
+      <OutlinedLabel
+        value={label}
+        fontSize={t.font.clock}
+        color={TEXT}
+        width={140}
+        height={44}
+        textAlign="middle-center"
+      />
+      <UiEntity uiTransform={{ width: 40, height: 40, margin: { left: 4 } }}>
+        <OutlinedLabel
+          value={`R${round ? round.roundId : '-'}`}
+          fontSize={t.font.tiny}
+          color={MUTED}
+          textAlign="middle-left"
+        />
+      </UiEntity>
+    </UiEntity>
+  )
+}
+
+// Leaderboard-only text scale — 20% smaller per explicit user request, and
+// MOBILE ONLY (desktop's leaderboard was already fine and wasn't part of the
+// ask). Scoped to this component rather than the shared theme font sizes
+// since tiny/small/body/title are also used by Hint, StatusPanel, Toasts,
+// etc. on both platforms.
+const LEADERBOARD_TEXT_SCALE = 0.8
+function lbFont(t: Theme, n: number): number {
+  return t.mobile ? Math.round(n * LEADERBOARD_TEXT_SCALE) : n
+}
 
 function Leaderboard(props: { t: Theme }) {
   const t = props.t
@@ -163,7 +198,7 @@ function Leaderboard(props: { t: Theme }) {
     rows.length === 0 ? (
       <Label
         value={t.mobile ? 'no words yet' : 'No words yet — be first!'}
-        fontSize={t.font.tiny}
+        fontSize={lbFont(t, t.font.tiny)}
         color={MUTED}
         uiTransform={{ height: t.mobile ? 22 : 24 }}
       />
@@ -180,19 +215,19 @@ function Leaderboard(props: { t: Theme }) {
         >
           <Label
             value={`${i + 1}.`}
-            fontSize={t.font.small}
+            fontSize={lbFont(t, t.font.small)}
             color={i === 0 ? ACCENT : MUTED}
             uiTransform={{ width: t.mobile ? 22 : 28, height: '100%' }}
           />
           <Label
             value={row.name.length > (t.mobile ? 9 : 16) ? row.name.slice(0, t.mobile ? 9 : 16) + '…' : row.name}
-            fontSize={t.font.small}
+            fontSize={lbFont(t, t.font.small)}
             color={row.address === me ? ACCENT : TEXT}
             uiTransform={{ width: t.mobile ? 100 : 170, height: '100%' }}
           />
           <Label
             value={`${row.points}`}
-            fontSize={t.font.body}
+            fontSize={lbFont(t, t.font.body)}
             color={TEXT}
             uiTransform={{ width: t.mobile ? 52 : 50, height: '100%' }}
           />
@@ -207,7 +242,6 @@ function Leaderboard(props: { t: Theme }) {
           width: 190,
           flexDirection: 'column',
           padding: { left: 10, right: 10, top: 6, bottom: 6 },
-          margin: { top: Math.round(t.insets.top * LEADERBOARD_DROP_FRACTION) },
           borderRadius: t.radius
         }}
         uiBackground={{ color: PANEL_BG }}
@@ -230,7 +264,7 @@ function Leaderboard(props: { t: Theme }) {
       }}
       uiBackground={{ color: PANEL_BG }}
     >
-      <Label value="LEADERBOARD" fontSize={t.font.title} color={ACCENT} uiTransform={{ height: 26 }} />
+      <Label value="LEADERBOARD" fontSize={lbFont(t, t.font.title)} color={ACCENT} uiTransform={{ height: 26 }} />
       {body}
     </UiEntity>
   )
@@ -297,23 +331,25 @@ function Bag(props: { t: Theme }) {
 }
 
 /**
- * How many slots span a FULL-width bag row — i.e. what sets one slot's size.
- *
- * This is intentionally separate from MAX_INVENTORY. The two were the same
- * number when the row filled the whole screen, but the row shares the bottom
- * of the screen with the explorer's own E/F touch buttons in the
- * bottom-right, which a scene cannot move or draw over. Keeping slot size
- * pegged here means lowering the carry limit buys back real estate on the
- * right instead of just making each slot bigger.
+ * Nudges the whole bag row right, clear of the emote button that now sits in
+ * the bottom-right touch cluster alongside E/F/+/jump, per explicit user
+ * request. Room to do this opened up when the slots became fixed-size
+ * squares below instead of flex-stretched to fill a wide percentage row —
+ * the row is narrower now, so it no longer needs to hug the left edge.
  */
-const BAG_ROW_CAPACITY = 10
+const MOBILE_BAG_ROW_SHIFT_RIGHT = 62 // was 36; +26 (~half a slot) per explicit user request
 
 /**
  * Mobile bag: always exactly MAX_INVENTORY slots in one row, so it never
  * reflows or changes width as tiles are picked up — filled slots show the
- * glyph and are tappable; empty ones are just an outline placeholder. Slot
- * width is a flex share of the row rather than a fixed px value, so it stays
- * correct regardless of the device's actual screen width.
+ * glyph and are tappable; empty ones are just an outline placeholder.
+ *
+ * Slots are fixed square boxes (t.mobileBagSlot x t.mobileBagSlot) rather
+ * than a flex share of a wide percentage-width row — per explicit user
+ * request for smaller, squarer tiles. The row itself sizes to its content
+ * (width: 'auto') instead of reserving a fixed percentage of the screen, so
+ * it naturally stays clear of the explorer's own bottom-right touch cluster
+ * without needing a capacity/percentage trick the way the old layout did.
  */
 function MobileBagRow(props: { t: Theme }) {
   const t = props.t
@@ -332,8 +368,7 @@ function MobileBagRow(props: { t: Theme }) {
         // selectable. Forcing a remount on occupant change fixes that.
         key={slot ? `slot-${slot.entity}` : `empty-${i}`}
         uiTransform={{
-          flexGrow: 1,
-          flexBasis: 0,
+          width: t.mobileBagSlot,
           height: t.mobileBagSlot,
           margin: { left: 2, right: 2 },
           borderRadius: t.radius,
@@ -359,15 +394,12 @@ function MobileBagRow(props: { t: Theme }) {
   return (
     <UiEntity
       uiTransform={{
-        // Deliberately NOT 100%. Slot size is pinned to BAG_ROW_CAPACITY, so
-        // carrying fewer tiles shortens the ROW instead of fattening the
-        // slots — the gap it leaves on the right is the point, that's where
-        // the explorer draws its own E/F touch buttons.
-        width: `${Math.round((MAX_INVENTORY / BAG_ROW_CAPACITY) * 100)}%`,
+        width: 'auto',
         height: t.mobileBagSlot,
         flexDirection: 'row',
         alignItems: 'center',
-        padding: { left: 10, right: 10 }
+        padding: { left: 10, right: 10 },
+        margin: { left: MOBILE_BAG_ROW_SHIFT_RIGHT }
       }}
     >
       {slots}
@@ -563,31 +595,56 @@ function WinnerBanner(props: { t: Theme }) {
  */
 function MobileUi(t: Theme) {
   return (
-    <UiEntity
-      uiTransform={{
-        width: '100%',
-        height: '100%',
-        flexDirection: 'column',
-        justifyContent: 'space-between',
-        padding: {
-          top: t.insets.top,
-          right: t.insets.right,
-          bottom: t.insets.bottom,
-          left: t.insets.left
-        }
-      }}
-    >
-      <UiEntity uiTransform={{ width: '100%', height: 'auto', flexDirection: 'row', justifyContent: 'space-between' }}>
-        <StatusPanel t={t} />
-        <Leaderboard t={t} />
+    // Plain (non-flex-between) outer wrapper. MobileClock and WinnerBanner
+    // are positionType 'absolute' overlays — see WinnerBanner's own comment
+    // for why: this UI engine still counts absolute children as flex items
+    // under justify-content: space-between, so adding them as siblings
+    // INSIDE that column below was quietly reshuffling the two real rows'
+    // spacing (the "ugly" regression). Keeping them as top-level siblings of
+    // this plain wrapper instead means they can't touch that column's math
+    // at all; their own screen position comes entirely from their own
+    // explicit `position`.
+    <UiEntity uiTransform={{ width: '100%', height: '100%' }}>
+      <UiEntity
+        uiTransform={{
+          width: '100%',
+          height: '100%',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          // Fixed on all four sides, not t.insets.* — that reporting bug (see
+          // MOBILE_CLOCK_TOP) wasn't just a top/bottom problem: right was
+          // still leaving the leaderboard short of the true right edge, and
+          // left was eating into the row's available width, squeezing the
+          // bag slots narrower than intended. MOBILE_TOP_MARGIN also
+          // replaces the old LEADERBOARD_DROP_FRACTION nudge — that was
+          // specifically clearing 7.25-era profile/eye icons that lived where
+          // the leaderboard now sits; 7.26 moved them to the opposite corner,
+          // so it's no longer needed at all.
+          padding: {
+            top: MOBILE_TOP_MARGIN,
+            right: MOBILE_SIDE_MARGIN,
+            bottom: MOBILE_BOTTOM_MARGIN,
+            left: MOBILE_SIDE_MARGIN
+          }
+        }}
+      >
+        {/* SDK7 7.26.0 (15 Aug) moved the explorer's own system buttons —
+            avatar, reload scene, chat/discover/share — from the right side to
+            the left on mobile Godot. The leaderboard stacks top-right to stay
+            clear of them; StatusPanel isn't used on mobile any more — the
+            round number now renders next to the clock in MobileClock. */}
+        <UiEntity uiTransform={{ width: '100%', height: 'auto', flexDirection: 'column', alignItems: 'flex-end' }}>
+          <Leaderboard t={t} />
+        </UiEntity>
+
+        <UiEntity uiTransform={{ width: '100%', height: 'auto', flexDirection: 'column' }}>
+          <Toasts t={t} />
+          <Hint t={t} />
+          <MobileBagRow t={t} />
+        </UiEntity>
       </UiEntity>
 
-      <UiEntity uiTransform={{ width: '100%', height: 'auto', flexDirection: 'column' }}>
-        <Toasts t={t} />
-        <Hint t={t} />
-        <MobileBagRow t={t} />
-      </UiEntity>
-
+      <MobileClock t={t} />
       <WinnerBanner t={t} />
     </UiEntity>
   )
@@ -633,7 +690,22 @@ const Ui = () => {
 function render(t: Theme): void {
   ReactEcsRenderer.setUiRenderer(Ui, {
     virtualWidth: t.virtualWidth,
-    virtualHeight: t.virtualHeight
+    virtualHeight: t.virtualHeight,
+    // SDK7 7.26.0 added an automatic screen-inset behaviour to setUiRenderer
+    // that's on by default — the renderer itself now shrinks/offsets the
+    // whole canvas to dodge the explorer's own chrome, ON TOP OF the manual
+    // `insets` padding platform.ts already computes from UiCanvasInformation
+    // and applies by hand throughout this file. That's a double inset: it's
+    // almost certainly why mobile elements pinned near the top were landing a
+    // third of the way down the screen instead. 'none' opts back out so this
+    // file stays the single source of truth for inset handling on mobile,
+    // matching how it already worked pre-7.26.
+    //
+    // Desktop is explicitly excluded — it was never part of this bug (the
+    // user confirmed desktop Unity stayed fine throughout), so it keeps the
+    // renderer's own default ('device') rather than risk changing behaviour
+    // that wasn't broken.
+    screenInset: t.mobile ? 'none' : undefined
   })
 }
 

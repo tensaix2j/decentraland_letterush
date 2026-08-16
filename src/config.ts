@@ -15,10 +15,13 @@ export const enum SyncId {
  * an alpha-tested glyph decal — see view.ts). Those count against the
  * scene's material budget same as anything else, so this got dialed back
  * down from 100 (200 materials) while the world's static material count was
- * also being cut — 50 tiles is a middle ground between "always something to
+ * also being cut — 50 tiles was a middle ground between "always something to
  * find" and not eating half the remaining budget on the tile pool alone.
+ * Bumped to 60 per explicit request — West's anchor count grew (fortress
+ * spawns + moving-platform spawns), so there's more room to spread tiles out
+ * before this becomes the bottleneck again.
  */
-export const MAX_TILES = 50
+export const MAX_TILES = 60
 /**
  * Tiles a single player may carry.
  *
@@ -53,6 +56,21 @@ export const PICKUP_RADIUS = 2
 export const DROP_DISTANCE = 3.2
 /** A held tile whose owner has vanished this long is returned to the wild. */
 export const ABANDON_MS = 20_000
+/**
+ * An IN_WORLD tile that's sat uncollected this long gets re-anchored to a
+ * fresh zone spot. Without this, a tile dropped somewhere unreachable
+ * (dropSelected() has no reachability check — it just lands DROP_DISTANCE in
+ * front of the player, which can be off a ledge, inside geometry, over a
+ * moving-platform gap, etc.) sits IN_WORLD forever: spawnTiles()'s budget is
+ * MAX_TILES minus every non-FREE tile, reachable or not, so a few bad drops
+ * quietly eat into the cap and crowd out new spawns at legitimate anchors —
+ * the world visibly "runs out" of findable tiles well before MAX_TILES is
+ * really in play. Long enough that a tile freshly spawned at a real anchor in
+ * a currently-unvisited zone corner isn't yanked away before anyone's had a
+ * fair chance to reach it; short enough to recycle a truly lost tile well
+ * inside a single round rather than let it squat for the full ROUND_LENGTH_MS.
+ */
+export const STALE_WORLD_MS = 3 * 60_000
 /** Host loop cadence. */
 export const HOST_TICK_MS = 1000
 
