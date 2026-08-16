@@ -27,7 +27,7 @@ z 192 ┌────────────┬──────────�
 z 128 ├────────────┼────────────┼────────────┤
       │  WEST      │  CENTER    │  EAST      │
       │ The        │ Main       │ Jungle     │
-      │ Foundry    │ Board      │ Maze       │
+      │ Fortress   │ Board      │ Maze       │
       │            │ 21×21      │            │
 z  64 ├────────────┼────────────┼────────────┤
       │ Mountains  │  SOUTH     │ Mountains  │
@@ -40,7 +40,7 @@ z   0 └────────────┴──────────�
 | --- | --- | --- |
 | **CENTER** | Main board | 21×21 board on a raised podium, four stepped pyramids, a 24-pillar glyph ring, one ceremonial gate per zone |
 | **EAST** | Jungle | 19×19 braided hedge maze, canopy trees, ruin blocks |
-| **WEST** | Industrial | 46-platform spiralling catwalk course, 6 tweened moving platforms, silos, pipe runs, climbable crate stacks |
+| **WEST** | Fortress | Medieval Castle, Castle walls, Castle stairs, Castle Towers, Spiral Platforms |
 | **SOUTH** | Egyptian desert | 4-storey tomb tower, a fresh maze per floor, connecting ramps, stepped pyramid roof, obelisks |
 | **NORTH** | Ice & snow | 40-step ascending ice-floe course, 8 rotating frozen discs, ice spikes, mountain backdrop |
 | **Diagonals** | Mountains | Layered peaks with snowcaps and boulders |
