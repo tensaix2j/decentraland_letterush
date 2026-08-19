@@ -25,6 +25,9 @@ import { getRound } from './state'
 import { setupSfx } from './sfx'
 import { setupBgm } from './bgm'
 import { setupAnalytics } from './analytics'
+import { setupHallOfFame, refreshHallOfFame } from './hallOfFame'
+import { setupHighscoreSubmission, submitOwnScoreForRound } from './highscore'
+import { MSG_ROUND_END, RoundEndMessage } from './config'
 
 let lastRenderedRound = -1
 
@@ -46,6 +49,8 @@ export function main(): void {
 
   setupSfx()
   setupBgm()
+  setupHallOfFame()
+  setupHighscoreSubmission()
   setupTileVisuals()
   setupHighlight()
   setupTileInteractions(bus)
@@ -53,6 +58,18 @@ export function main(): void {
   setupUi()
   setupPerformance()
   void setupAnalytics()
+
+  // Submit this client's own score, THEN refresh the hall-of-fame board —
+  // sequenced here (not inside either module) because this file is already
+  // where every setupX(bus) gets wired together. See highscore.ts's and
+  // hallOfFame.ts's own header comments for why this replaced an earlier,
+  // less reliable flat-delay version.
+  bus.on(MSG_ROUND_END, (_msg: RoundEndMessage) => {
+    void (async () => {
+      await submitOwnScoreForRound()
+      await refreshHallOfFame()
+    })()
+  })
 
   engine.addSystem(boardRenderSystem)
 

@@ -2,6 +2,9 @@
   "ecs7": true,
   "runtimeVersion": "7",
   "main": "bin/index.js",
+  "requiredPermissions": [
+    "USE_FETCH"
+  ],
   "display": {
     "title": "Letterush",
     "description": "Race through four themed parkour zones to collect letter tiles, then race back to the giant 21x21 board to spell words and score. Multiplayer, 10-minute rounds.",

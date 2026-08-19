@@ -6,9 +6,13 @@
 
 import { getUserData } from '~system/UserIdentity'
 
-const ANALYTICS_HOST = 'https://myvercel-puce.vercel.app/api'
-/** Identifies THIS scene to the shared analytics backend across game jams. */
-const SCENE_ID = 20260811
+/** Exported so other modules hitting the same backend (e.g. hallOfFame.ts's
+ * all-time top-scores fetch, highscore.ts's submissions) share one source of
+ * truth for the host and the scene/game id. */
+export const ANALYTICS_HOST = 'https://myvercel-puce.vercel.app/api'
+/** Identifies THIS scene to the shared analytics backend across game jams —
+ * same id space for visitor tracking (scene_id) and highscores (game_id). */
+export const SCENE_ID = 20260811
 
 async function registerVisitor(address: string, displayName: string): Promise<void> {
   const url = `${ANALYTICS_HOST}/insert_visitor`

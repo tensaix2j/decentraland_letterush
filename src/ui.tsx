@@ -52,6 +52,13 @@ function clock(msRemaining: number): string {
   return `${m}:${s < 10 ? '0' : ''}${s}`
 }
 
+// round.endsAt stays 0 until the host's first startRound() actually runs —
+// covers both "still syncing with the server" and the brief window after
+// that where a host exists but hasn't started round 1 yet. Shown in place of
+// the countdown digits during that window, per explicit user request (was
+// just "--:--", which reads as broken rather than "hang on").
+const CONNECTING_LABEL = 'Connecting... Pls wait'
+
 /* ------------------------------------------------------------------ *
  * Shared pieces
  * ------------------------------------------------------------------ */
@@ -64,8 +71,9 @@ function clock(msRemaining: number): string {
 function StatusPanel(props: { t: Theme }) {
   const t = props.t
   const round = getRound()
+  const connecting = !round || !round.endsAt
   const remaining = round && round.endsAt ? round.endsAt - Date.now() : 0
-  const label = round && round.endsAt ? clock(remaining) : '--:--'
+  const label = connecting ? CONNECTING_LABEL : clock(remaining)
 
   return (
     <UiEntity
@@ -89,10 +97,12 @@ function StatusPanel(props: { t: Theme }) {
       />
       <Label
         value={label}
-        fontSize={t.font.clock}
+        // Smaller + wrap-capable while connecting: "Connecting... Pls wait"
+        // is far too wide to read as one nowrap line at clock-digit size.
+        fontSize={connecting ? t.font.small : t.font.clock}
         color={TEXT}
-        textWrap="nowrap"
-        uiTransform={{ width: '100%', height: 46 }}
+        textWrap={connecting ? 'wrap' : 'nowrap'}
+        uiTransform={{ width: '100%', height: connecting ? 56 : 46 }}
       />
       {isHost() ? (
         // Without an explicit width, this leaf had no box to size against and
@@ -144,15 +154,18 @@ const MOBILE_SIDE_MARGIN = 12
 function MobileClock(props: { t: Theme }) {
   const t = props.t
   const round = getRound()
+  const connecting = !round || !round.endsAt
   const remaining = round && round.endsAt ? round.endsAt - Date.now() : 0
-  const label = round && round.endsAt ? clock(remaining) : '--:--'
+  const label = connecting ? CONNECTING_LABEL : clock(remaining)
   return (
     <UiEntity
       uiTransform={{
         positionType: 'absolute',
         position: { top: MOBILE_CLOCK_TOP },
         width: '100%',
-        height: 46,
+        // Taller while connecting so the wrapped 2-line message has room —
+        // back to the normal single-line clock height once a round exists.
+        height: connecting ? 56 : 46,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center'
@@ -160,20 +173,19 @@ function MobileClock(props: { t: Theme }) {
     >
       <OutlinedLabel
         value={label}
-        fontSize={t.font.clock}
+        // Smaller + wider + wrap-capable while connecting: "Connecting... Pls
+        // wait" doesn't come close to fitting the normal 140px clock-digit box.
+        fontSize={connecting ? t.font.tiny : t.font.clock}
         color={TEXT}
-        width={140}
-        height={44}
+        width={connecting ? 260 : 140}
+        height={connecting ? 52 : 44}
         textAlign="middle-center"
       />
-      <UiEntity uiTransform={{ width: 40, height: 40, margin: { left: 4 } }}>
-        <OutlinedLabel
-          value={`R${round ? round.roundId : '-'}`}
-          fontSize={t.font.tiny}
-          color={MUTED}
-          textAlign="middle-left"
-        />
-      </UiEntity>
+      {connecting ? null : (
+        <UiEntity uiTransform={{ width: 40, height: 40, margin: { left: 4 } }}>
+          <OutlinedLabel value={`R${round ? round.roundId : '-'}`} fontSize={t.font.tiny} color={MUTED} textAlign="middle-left" />
+        </UiEntity>
+      )}
     </UiEntity>
   )
 }
