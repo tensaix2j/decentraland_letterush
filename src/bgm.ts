@@ -37,20 +37,29 @@
  * Can't reproduce mobile Godot from this sandbox, so the fix here is making
  * the failure observable (console logging) and self-healing on transient
  * errors, not a blind guess at the platform bug itself.
+ *
+ * Per explicit request, BGM is now desktop-Unity only — mobile Godot skips
+ * it entirely (the AudioStream entity is never created there), rather than
+ * continuing to chase the platform-specific playback bug above.
  */
 
 import { AudioStream, Entity, MediaState, engine } from '@dcl/sdk/ecs'
+import { getPlatform, isMobile } from '@dcl/sdk/platform'
 
-const BGM_URL = 'https://pub-bf766ea06d2944ffb279490084a5a4a7.r2.dev/bluesky.mp3'
+const BGM_URL = 'https://pub-bf766ea06d2944ffb279490084a5a4a7.r2.dev/apalonbeats.mp3'
 const BGM_VOLUME = 0.3
 /** Cooldown before retrying after MS_ERROR — long enough not to hammer a
  * genuinely-down host, short enough that a transient blip self-heals fast. */
 const RETRY_COOLDOWN_MS = 5000
+/** How often to poll for the platform report while waiting for it to resolve. */
+const PLATFORM_POLL_S = 0.5
 
 let bgmEntity: Entity | null = null
 let everPlayed = false
 let lastLoggedState: MediaState | undefined = undefined
 let lastRetryAt = 0
+let platformDecided = false
+let pollAccum = 0
 
 // MediaState is a const enum (inlined at compile time), so it can't be
 // reverse-indexed like a normal enum for logging — spell the names out.
@@ -67,6 +76,27 @@ const MEDIA_STATE_NAME: Record<MediaState, string> = {
 
 /** MUST be called once from main(), same as setupSfx(). */
 export function setupBgm(): void {
+  engine.addSystem(bgmStartSystem)
+}
+
+/**
+ * Waits for the platform report before deciding whether to start music at
+ * all. getPlatform() reports null for the first several frames after scene
+ * start (same caveat platform.ts's own watchPlatform works around) — calling
+ * isMobile() before then risks defaulting to "desktop" and starting the
+ * stream on a phone, which is exactly what this gate exists to prevent.
+ * Stops polling for good (platformDecided) once resolved either way.
+ */
+function bgmStartSystem(dt: number): void {
+  if (platformDecided) return
+  pollAccum += dt
+  if (pollAccum < PLATFORM_POLL_S) return
+  pollAccum = 0
+  if (getPlatform() === null) return
+  platformDecided = true
+
+  if (isMobile()) return // desktop Unity only, per explicit request
+
   bgmEntity = engine.addEntity()
   AudioStream.create(bgmEntity, { url: BGM_URL, playing: true, volume: BGM_VOLUME })
   engine.addSystem(bgmLoopSystem)
