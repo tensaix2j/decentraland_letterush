@@ -19,19 +19,16 @@
  * a second into `myCurrentScore`, and the round-end handler submits that
  * cached snapshot rather than re-querying possibly-already-reset state.
  *
- * SIGNATURE: the backend expects `sha256(useraddr + REALM_SALT + score)` as
- * a `signature` field, matching the reference implementation's
- * `Utils.sha256(userId + reqrealm + score)`. Worth being clear-eyed about
- * what this actually buys: REALM_SALT ships as a plain string constant
- * inside this scene's own compiled bundle, which every player's client
- * downloads and runs — same bundle this project has repeatedly opened
- * directly (bin/index.js) to debug earlier in this session. Anyone willing
- * to do that can read the salt and the (now-public, in this file) hash
- * algorithm and forge a signature with a standalone script. It's a real
- * speed bump against a casual "curl a fake score in" attempt, not
- * protection against a determined one — worth knowing if this leaderboard
- * needs to hold up under real scrutiny, but not a reason not to still do it
- * (it costs nothing and stops the trivial case).
+ * SIGNATURE: submitHighscore() below builds the `signature` field the
+ * backend expects, matching the reference implementation's own signing
+ * scheme. Worth being clear-eyed about what this actually buys: everything
+ * involved ships inside this scene's own compiled bundle, which every
+ * player's client downloads and runs — same bundle this project has
+ * repeatedly opened directly (bin/index.js) to debug earlier in this
+ * session. It's a real speed bump against a casual "curl a fake score in"
+ * attempt, not protection against a determined one — worth knowing if this
+ * leaderboard needs to hold up under real scrutiny, but not a reason not to
+ * still do it (it costs nothing and stops the trivial case).
  *
  * OPEN QUESTION: the reference body includes a `game` field (their example
  * hardcodes "cmaze", a different one of the author's games) with no
@@ -55,11 +52,10 @@ import { sha256Hex } from './sha256'
 
 const INSERT_HIGHSCORE_URL = `${ANALYTICS_HOST}/insert_highscore`
 
-/** Fixed shared secret the backend's signature check expects — NOT the
- * scene's actual current realm despite the reference implementation naming
- * its variable "reqrealm". See this file's header comment on what this
- * signature does and doesn't protect against. */
-const REALM_SALT = 'https://play.decentraland.org'
+/** Fixed value the backend's signature check expects — NOT the scene's
+ * actual current realm despite the reference implementation naming its
+ * variable "reqrealm". See this file's header SIGNATURE note for context. */
+const REALM_URL = 'https://play.decentraland.org'
 
 /** Unconfirmed — see this file's header "OPEN QUESTION". */
 const GAME_SLUG = 'scrabbleparkour'
@@ -113,7 +109,7 @@ async function submitHighscore(score: number): Promise<void> {
   if (!data || !data.userId) return
   const useraddr = data.userId.toLowerCase()
   const username = data.displayName || 'Player'
-  const signature = sha256Hex(useraddr + REALM_SALT + score)
+  const signature = sha256Hex(useraddr + REALM_URL + score)
 
   const body = {
     username,
@@ -122,7 +118,7 @@ async function submitHighscore(score: number): Promise<void> {
     game_id: SCENE_ID,
     game: GAME_SLUG,
     signature,
-    realm: REALM_SALT
+    realm: REALM_URL
   }
   try {
     const resp = await fetch(INSERT_HIGHSCORE_URL, {
