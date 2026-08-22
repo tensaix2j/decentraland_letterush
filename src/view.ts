@@ -19,7 +19,7 @@ import {
 } from '@dcl/sdk/ecs'
 import { Color3, Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { getPlatform } from '@dcl/sdk/platform'
-import { TEXTURE_ALPHABET, TileStatus } from './config'
+import { TEXTURE_ALPHABET, TEXTURE_ALPHABET_UI, TileStatus } from './config'
 import { letterPlaneUvs } from './letters'
 import { BOARD_CELL_SIZE, BOARD_Y } from './generated/layout'
 import { cellCenter } from './board'
@@ -79,6 +79,26 @@ const TEXTURE_ALPHABET_MATERIAL_TEXTURE = Material.Texture.Common({
 })
 
 /**
+ * Committed board letters use this instead, per explicit user request:
+ * TEXTURE_ALPHABET's own glyph pixels are opaque BLACK on an otherwise fully
+ * transparent sheet (confirmed by direct pixel inspection — no white in it at
+ * all beyond a handful of stray antialiasing pixels), which was reportedly
+ * hard to make out once a tile is inset into the board. This sheet carries
+ * the exact same glyph pixels at the exact same 8x8 cell coordinates
+ * (confirmed pixel-for-pixel identical against TEXTURE_ALPHABET), so
+ * `letterPlaneUvs` crops it correctly with zero changes — the only
+ * difference is an opaque white rounded chip baked in behind each glyph,
+ * giving the glyph its own guaranteed-contrast backdrop independent of
+ * whatever's around it. Scoped to committed board letters only (see
+ * `syncBoardVisuals`) — loose/held tiles and staged (not-yet-submitted)
+ * board previews keep the plain sheet, ask if those should switch too.
+ */
+const TEXTURE_ALPHABET_UI_MATERIAL_TEXTURE = Material.Texture.Common({
+  src: TEXTURE_ALPHABET_UI,
+  wrapMode: TextureWrapMode.TWM_CLAMP
+})
+
+/**
  * Under the OLD material-offset/tiling crop, Godot needed `flip = true` and
  * Unity needed `flip = false` — that asymmetry came from each engine's OWN
  * default box UV unwrap running a different V direction, which the material
@@ -126,7 +146,7 @@ const DECAL_FACES: { position: Vector3; rotation: Quaternion }[] = [
 const backingOf = new Map<Entity, Entity>()
 const decalOf = new Map<Entity, Entity[]>()
 
-function ensureLetterVisual(parent: Entity): { backing: Entity; decals: Entity[] } {
+function ensureLetterVisual(parent: Entity, useUiTexture: boolean): { backing: Entity; decals: Entity[] } {
   let backing = backingOf.get(parent)
   if (!backing) {
     backing = engine.addEntity()
@@ -146,11 +166,15 @@ function ensureLetterVisual(parent: Entity): { backing: Entity; decals: Entity[]
 
   let decals = decalOf.get(parent)
   if (!decals) {
+    // Material is bound once here, at creation, from whichever sheet this
+    // parent should use — see styleAsLetter, which only ever rewrites mesh
+    // uvs afterward, never the Material itself.
+    const material = useUiTexture ? DECAL_MATERIAL_BOARD : DECAL_MATERIAL
     decals = DECAL_FACES.map(({ position, rotation }) => {
       const face = engine.addEntity()
       Transform.create(face, { position, rotation, scale: Vector3.create(1, 1, 1), parent })
       MeshRenderer.setPlane(face)
-      Material.setPbrMaterial(face, DECAL_MATERIAL)
+      Material.setPbrMaterial(face, material)
       return face
     })
     decalOf.set(parent, decals)
@@ -177,6 +201,14 @@ const DECAL_MATERIAL = {
   specularIntensity: 0.2
 }
 
+/** Same as DECAL_MATERIAL but pointed at the white-backed sheet — see
+ * TEXTURE_ALPHABET_UI_MATERIAL_TEXTURE's own comment for why. Used only for
+ * committed board letters, via `ensureLetterVisual`'s `useUiTexture` flag. */
+const DECAL_MATERIAL_BOARD = {
+  ...DECAL_MATERIAL,
+  texture: TEXTURE_ALPHABET_UI_MATERIAL_TEXTURE
+}
+
 /**
  * Style `parent`'s letter visual. Creates the backing + decal faces on first use.
  *
@@ -196,8 +228,8 @@ const DECAL_MATERIAL = {
  * alone. That's what makes staging/re-styling an existing entity cheap: it's
  * a mesh data rewrite, not a Material component swap.
  */
-function styleAsLetter(parent: Entity, letterIndex: number): void {
-  const { decals } = ensureLetterVisual(parent)
+function styleAsLetter(parent: Entity, letterIndex: number, useUiTexture = false): void {
+  const { decals } = ensureLetterVisual(parent, useUiTexture)
   const uvs = letterPlaneUvs(letterIndex, flipV)
   for (const face of decals) MeshRenderer.setPlane(face, uvs)
   activeLetterIndex.set(parent, letterIndex)
@@ -425,7 +457,7 @@ export function syncBoardVisuals(): void {
       entity = createBoardLetterEntity(i, true)
       boardLetterEntities.set(i, entity)
     }
-    styleAsLetter(entity, value - 1)
+    styleAsLetter(entity, value - 1, true) // committed board letter — white-backed sheet, see TEXTURE_ALPHABET_UI_MATERIAL_TEXTURE
     boardLetterValues.set(i, value)
   }
 }

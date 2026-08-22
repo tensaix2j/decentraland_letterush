@@ -68,7 +68,7 @@
  * clients, not this client's own timing.
  */
 
-import { engine, Entity, TextAlignMode, TextShape, Transform } from '@dcl/sdk/ecs'
+import { engine, Entity, Font, TextAlignMode, TextShape, Transform } from '@dcl/sdk/ecs'
 import { Quaternion, Vector3 } from '@dcl/sdk/math'
 import { getPlatform, isMobile } from '@dcl/sdk/platform'
 import { ANALYTICS_HOST, SCENE_ID } from './analytics'
@@ -184,11 +184,14 @@ function addLabel(x: number, y: number, text: string, fontSize: number, textAlig
   })
   TextShape.create(e, {
     text,
+    font: Font.F_SANS_SERIF, // heaviest-looking of the 3 built-in fonts; explicit even though it's also the default
     fontSize,
     textAlign,
     textColor: { r: 1, g: 0.92, b: 0.7, a: 1 },
     outlineColor: { r: 0, g: 0, b: 0 },
-    outlineWidth: 0.15
+    // TextShape has no bold/weight option — this is the actual lever for a
+    // "thick" look, per explicit user request. Bumped from 0.15.
+    outlineWidth: 0.3
   })
   return e
 }

@@ -28,6 +28,7 @@ import { setupAnalytics } from './analytics'
 import { setupHallOfFame, refreshHallOfFame } from './hallOfFame'
 import { setupHighscoreSubmission, submitOwnScoreForRound } from './highscore'
 import { MSG_ROUND_END, RoundEndMessage } from './config'
+import { triggerEmote } from '~system/RestrictedActions'
 
 let lastRenderedRound = -1
 
@@ -65,6 +66,16 @@ export function main(): void {
   // hallOfFame.ts's own header comments for why this replaced an earlier,
   // less reliable flat-delay version.
   bus.on(MSG_ROUND_END, (_msg: RoundEndMessage) => {
+    // MSG_ROUND_END is broadcast to every connected peer (see host.ts's
+    // bus.emit), so every client's own handler fires independently and
+    // triggers this on ITS OWN local avatar — no per-player targeting
+    // needed. Avatar animations are visible to everyone nearby, not just
+    // performed locally, so the net effect is every player throwing their
+    // hands up together the moment a round ends. Full-body, so it plays
+    // only while a player is standing still and gets interrupted by
+    // movement/jump — acceptable here since round-end is a natural pause.
+    void triggerEmote({ predefinedEmote: 'handsair' })
+
     void (async () => {
       await submitOwnScoreForRound()
       await refreshHallOfFame()
