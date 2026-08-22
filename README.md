@@ -1,7 +1,7 @@
+![](https://github.com/tensaix2j/decentraland_letterush/blob/master/assets/images/navmapThumbnail.jpg?raw=true)
+
 # LetteRush — Decentraland Game Jam 2026
 A fast-paced multiplayer game where you parkour around the world hunting for letters, then use them to build words on a shared board and compete for points.
-
-![](https://github.com/tensaix2j/decentraland_letterush/blob/master/assets/images/navmapThumbnail.jpg?raw=true)
 
 
 ## Scene
@@ -305,4 +305,5 @@ ROUND_LENGTH_MS = 10min  // round length
 PICKUP_RADIUS = 2        // metres — must stay under DROP_DISTANCE
 DROP_DISTANCE = 3.2      // metres in front of the player
 ```
+
 
