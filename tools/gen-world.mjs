@@ -16,8 +16,13 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SEED = 20260810
-/** Pass --with-models after running tools/fetch-models.sh to layer GLB props on top. */
-const WITH_MODELS = process.argv.includes('--with-models')
+/**
+ * GLB prop dressing (fetched via tools/fetch-models.sh) is layered on by
+ * default. Pass --no-models to skip it and fall back to the bare procedural
+ * geometry — e.g. before fetch-models.sh has been run, or for a faster
+ * iteration loop that doesn't care about decoration.
+ */
+const WITH_MODELS = !process.argv.includes('--no-models')
 
 /* ------------------------------------------------------------------ *
  * Deterministic RNG
@@ -344,7 +349,7 @@ function slab(name, cx, cz, sx, sz, top, color, thickness = 0.4) {
  * ------------------------------------------------------------------ */
 const missingModels = new Set()
 
-/** Place a downloaded GLB prop. No-ops unless --with-models and the file exists. */
+/** Place a downloaded GLB prop. No-ops if --no-models was passed, or the file doesn't exist. */
 function addModel(name, slug, pos, opts = {}) {
   if (!WITH_MODELS) return null
   const src = `assets/Models/${slug}.glb`
@@ -509,9 +514,10 @@ function buildCenter() {
   // Aztec pyramids at the four plaza corners — a single hand-placed GLB
   // (assets/models/aztech_pyramid.glb), replacing the old 4-step stacked-slab
   // primitive. Unlike the decorative props in the four zones (addModel(),
-  // gated behind --with-models + a fetch script), this is core plaza
-  // geometry now, so it's placed directly and unconditionally — the scene
-  // shouldn't lose its corner landmarks just because someone forgot a flag.
+  // skipped entirely if --no-models is passed or the file's missing), this
+  // is core plaza geometry now, so it's placed directly and unconditionally
+  // — the scene shouldn't lose its corner landmarks over a flag or a missed
+  // download.
   if (!existsSync(resolve(ROOT, PYRAMID_MODEL_SRC))) {
     throw new Error(`Missing ${PYRAMID_MODEL_SRC} — the plaza's corner pyramids need this model.`)
   }
@@ -664,11 +670,13 @@ function mergeWallRuns(wall, W, H) {
 
 /**
  * The 3 canopy tree GLBs (assets/models/tree_0/1/2.glb), replacing the old
- * trunk-cylinder + canopy-sphere primitive pair. `nativeHeight` was measured
- * directly from each file's own glTF accessors (min/max Y across the whole
- * mesh, accounting for the root node's own translation). All 3 are pivoted
- * at their own base — bottom-middle sits at local (0,0,0) — so placement is
- * just ground level, no per-model offset needed.
+ * trunk-cylinder + canopy-sphere primitive pair. Per explicit user
+ * direction, all 3 are treated as pivoted at their own base (bottom-centre =
+ * local (0,0,0)) regardless of what the currently-committed files measure —
+ * the files in assets/models/ are expected to be replaced with correctly-
+ * pivoted exports, so no per-model offset is applied here. If trees still
+ * look sunk/floating after that swap, re-measure and add a `nativeMinY`
+ * offset back in (see addPine/the mountains/the rocks for that pattern).
  *
  * >>> ADJUST TREE SIZE HERE <<< — see `targetHeight` where TREE_MODELS is
  * used, in buildEast() below. Scale is derived from targetHeight and
@@ -680,6 +688,32 @@ const TREE_MODELS = [
   { src: 'assets/models/tree_1.glb', nativeHeight: 0.422 },
   { src: 'assets/models/tree_2.glb', nativeHeight: 0.489 }
 ]
+
+/**
+ * assets/models/platform_2.glb replaces the jungle maze's flat-colored box
+ * wall runs, per explicit user request ("regardless of stretch"). Measured
+ * directly from the file: it's a floating-island/disc shape (node name
+ * "Island01"), pivoted at its TOP (local maxY ~0, the body hangs DOWN from
+ * there to local minY -0.7735) — the OPPOSITE of hedge.glb/the trees, which
+ * are bottom-pivoted. Placement below accounts for that (position.y is the
+ * wall's TOP, not its base).
+ *
+ * Two things worth flagging even though stretch itself was explicitly
+ * waived: it carries 2 materials per instance (double hedge.glb's 1, so
+ * budget cost per wall run is double what that alternative would have
+ * been), and its own dedicated collider is a CYLINDER (`Cylinder_collider`),
+ * not a box. Scaling a cylinder non-uniformly to fill a long rectangular
+ * wall run leaves the footprint's corners uncovered — unlike hedge.glb's
+ * clean unit-cube collider, this one won't reliably block a player who
+ * walks into a wall run's far corner. That's a real gameplay gap, not just
+ * a visual one — worth testing in-client specifically at the ends of the
+ * longer merged runs.
+ */
+const PLATFORM2_MODEL_SRC = 'assets/models/platform_2.glb'
+if (!existsSync(resolve(ROOT, PLATFORM2_MODEL_SRC))) {
+  throw new Error(`Missing ${PLATFORM2_MODEL_SRC} — the jungle maze's walls need this model.`)
+}
+const PLATFORM2_NATIVE = { width: 0.887, height: 0.7772, depth: 0.914 } // measured, see header comment
 
 /* ================================================================== *
  * EAST — Jungle maze
@@ -705,22 +739,111 @@ function buildEast() {
   const step = (BLOCK - 4) / W // ~1.58 m per wall cell
   const ox = x0 + 2
   const oz = z0 + 2
-  const wallH = 3.6
+  // 3.6m was a uniform height for every hedge run — per direct user report,
+  // players were simply jumping clean over it, making the maze's walls a
+  // non-obstacle. 3.6m sits right around what a running double-jump can
+  // clear, which explains it: it wasn't a hard barrier, just a low hurdle.
+  // Mixed per-run heights fix that with real variety instead of one bigger
+  // number: WALL_HEIGHT_MULT 1x keeps this same climbable-onto height (a
+  // player can still scale/stand on these — useful as shortcuts or vantage
+  // points, not a bug), while 2x (7.2m) and 3x (10.8m) go well past any
+  // jump/double-jump combo, so the maze always has some genuinely impassable
+  // walls forcing real navigation. Chosen per wall RUN (not per cell), so an
+  // entire merged hedge segment reads as one consistent height rather than
+  // jittering cell to cell.
+  //
+  // This IS still "random" (pick() off the seeded rnd() stream), but that's
+  // exactly the "random in a consistent way" the user asked for: gen-world.mjs
+  // is a build-time script, not something that re-rolls per player visit —
+  // it bakes ONE static main.composite from the fixed SEED constant above,
+  // so the exact same wall gets the exact same height for every player,
+  // every time, until someone deliberately reruns the generator (or changes
+  // SEED). Nothing about this varies at runtime/per session.
+  const WALL_BASE_H = 3.6
+  const WALL_HEIGHT_MULT = [1, 2, 3]
+
+  // Rectangles for every wall run's footprint + its own rolled height
+  // (world-space, XZ), captured so the canopy-tree loop below can tell
+  // whether a candidate spot lands on top of a wall and needs to sit at that
+  // wall's own top height instead of ground level, rather than looking
+  // buried in it.
+  const wallRects = []
 
   for (const run of mergeWallRuns(wall, W, H)) {
     const lenC = run.c1 - run.c0 + 1
     const lenR = run.r1 - run.r0 + 1
     const px = ox + (run.c0 + lenC / 2) * step
     const pz = oz + (run.r0 + lenR / 2) * step
-    add({
+    const halfW = (lenC * step) / 2
+    const halfD = (lenR * step) / 2
+    const wallH = WALL_BASE_H * pick(WALL_HEIGHT_MULT)
+    wallRects.push({ x0: px - halfW, x1: px + halfW, z0: pz - halfD, z1: pz + halfD, h: wallH })
+    const id = add({
       name: 'Jungle Hedge',
-      pos: [px, wallH / 2 + 0.05, pz],
-      scale: [lenC * step, wallH, lenR * step],
-      color: rnd() < 0.5 ? C.jungleHedge : C.jungleHedge2,
-      roughness: 0.95,
-      lift: CORRIDOR_LIFT,
-      collider: 3
+      // TOP-pivoted (body hangs down from here) — see PLATFORM2_MODEL_SRC.
+      pos: [px, wallH + 0.05, pz],
+      scale: [(lenC * step) / PLATFORM2_NATIVE.width, wallH / PLATFORM2_NATIVE.height, (lenR * step) / PLATFORM2_NATIVE.depth],
+      rot: yawQuat(0),
+      mesh: 'none', // geometry comes from the glTF below, not a primitive
+      collider: 0
     })
+    gltfContainers[id] = {
+      json: {
+        src: PLATFORM2_MODEL_SRC,
+        // Dedicated cylinder collider — see PLATFORM2_MODEL_SRC's own
+        // comment on why this may not fully block a run's corners.
+        visibleMeshesCollisionMask: 0,
+        invisibleMeshesCollisionMask: 3
+      }
+    }
+  }
+
+  // A light dusting of jungle-plant-06 against/on top of a few wall runs —
+  // hard-capped at 3 total per explicit request (was much heavier before:
+  // a per-face pass plus a separate per-top pass, on top of a 70-instance
+  // ground scatter in buildDecoration(), all deemed too ugly/busy). Uses the
+  // same wallRects footprints as groundYAt below rather than reasoning about
+  // platform_2.glb's actual scaled mesh shape — good enough for a "leans
+  // against/sits on the wall" approximation. Optional dressing, gated behind
+  // --no-models like every other addModel() call.
+  const MAX_WALL_PLANTS = 3
+  let wallPlantsPlaced = 0
+  for (const r of wallRects) {
+    if (wallPlantsPlaced >= MAX_WALL_PLANTS) break
+    if (rnd() < 0.7) continue // only a few walls get a plant at all
+    const onTop = rnd() < 0.5
+    let px, pz, py
+    if (onTop) {
+      px = rf(r.x0, r.x1)
+      pz = rf(r.z0, r.z1)
+      py = r.h + 0.05
+    } else {
+      const alongX = r.x1 - r.x0 >= r.z1 - r.z0
+      if (alongX) {
+        px = rf(r.x0, r.x1)
+        pz = rnd() < 0.5 ? r.z0 - 0.15 : r.z1 + 0.15 // hug one long face
+      } else {
+        pz = rf(r.z0, r.z1)
+        px = rnd() < 0.5 ? r.x0 - 0.15 : r.x1 + 0.15
+      }
+      py = 0.05 // ground-pivoted model — sits at the floor, not floating partway up the face
+    }
+    const scale = rf(0.9, 1.5)
+    addModel('Jungle Wall Plant', 'jungle-plant-06', [px, py, pz], {
+      scale: [scale, scale, scale],
+      rot: yawQuat(rf(0, 360))
+    })
+    wallPlantsPlaced++
+  }
+
+  /** Ground Y a tree/prop at (px,pz) should sit at — that wall's own
+   * top height if it falls inside a hedge's footprint, plain ground
+   * otherwise. */
+  function groundYAt(px, pz) {
+    for (const r of wallRects) {
+      if (px >= r.x0 && px <= r.x1 && pz >= r.z0 && pz <= r.z1) return r.h + 0.05
+    }
+    return 0.05
   }
 
   // Passage cells become tile anchors
@@ -752,28 +875,22 @@ function buildEast() {
   // Canopy trees around the maze perimeter — 3 hand-placed GLB variants
   // (TREE_MODELS, above), replacing the old trunk-cylinder + canopy-sphere
   // primitive pair. Unconditional/required, same treatment as the plaza's
-  // corner pyramid: this is core zone dressing now, not an optional
-  // --with-models prop, so the jungle shouldn't go bald if someone forgets
-  // that flag.
+  // corner pyramid: this is core zone dressing now, not an optional prop
+  // gated by --no-models, so the jungle shouldn't go bald over a flag.
   for (const t of TREE_MODELS) {
     if (!existsSync(resolve(ROOT, t.src))) {
       throw new Error(`Missing ${t.src} — the jungle's canopy trees need this model.`)
     }
   }
-  for (let i = 0; i < 8; i++) {
-    const edge = ri(0, 3)
-    let px, pz
-    if (edge === 0) (px = rf(x0 + 3, x0 + BLOCK - 3)), (pz = rf(z0 + 2.5, z0 + 4))
-    else if (edge === 1) (px = rf(x0 + 3, x0 + BLOCK - 3)), (pz = rf(z0 + BLOCK - 4, z0 + BLOCK - 2.5))
-    else if (edge === 2) (px = rf(x0 + 2.5, x0 + 4)), (pz = rf(z0 + 3, z0 + BLOCK - 3))
-    else (px = rf(x0 + BLOCK - 4, x0 + BLOCK - 2.5)), (pz = rf(z0 + 3, z0 + BLOCK - 3))
-
+  /** Places one canopy tree at (px, groundY, pz), random model + yaw, target
+   * height in metres. Shared by the random perimeter loop and the fixed
+   * user-picked spots below so both stay in sync with TREE_MODELS. */
+  function placeTree(px, pz, groundY, targetHeight) {
     const tree = pick(TREE_MODELS)
-    const targetHeight = rf(8, 15) // final in-world height, metres — was rf(7,13) trunk + canopy before
     const scale = targetHeight / tree.nativeHeight
     const id = add({
       name: 'Jungle Tree',
-      pos: [px, 0.05, pz], // all 3 models are pivoted at their own base — see TREE_MODELS
+      pos: [px, groundY, pz], // treated as pivoted at bottom-centre — see TREE_MODELS
       scale: [scale, scale, scale],
       rot: yawQuat(rf(0, 360)),
       mesh: 'none', // geometry comes from the glTF below, not a primitive
@@ -787,6 +904,38 @@ function buildEast() {
         visibleMeshesCollisionMask: 3
       }
     }
+  }
+
+  // Every canopy tree's (x, y, z) is now a hard-coded, hand-placed spot —
+  // NOT drawn from the shared seeded RNG stream. This used to be an 8-tree
+  // random-edge loop plus a handful of exact user-picked spots, but ANY
+  // unrelated code change earlier in this same generator (e.g. the jungle
+  // wall-plant sprinkle, which also draws from this stream) shifts how many
+  // rnd() calls happen before this loop runs, which silently reshuffled
+  // every "randomly" placed tree's position on the next regen — exactly the
+  // "carefully placed trees are all wrong again" complaint. Baking the
+  // random ones down to literal numbers (their last-generated positions,
+  // with 2 of them corrected per explicit request below) makes tree
+  // placement immune to that for good. Y values are real in-client
+  // heights (including sitting on 2x/3x-height wall tops) — placed as
+  // given, not run through groundYAt.
+  const EAST_FIXED_TREES = [
+    [133, 10.3, 110], // was a random tree that landed near 133,10.9,119 — moved per explicit request
+    [132.13, 10.85, 67.73],
+    [147.78, 10.85, 67.16],
+    [189.34, 10.85, 123.84],
+    [188.09, 3.65, 79.58],
+    [155.12, 10.85, 66.63],
+    [188.23, 3.65, 72.36],
+    [132.62, 10.85, 124.12],
+    [132, 11, 100],
+    [133, 3.7, 84],
+    [151, 10.9, 91], // was 150,10,92 — moved per explicit request
+    [150, 10, 110],
+    [169, 10, 102]
+  ]
+  for (const [px, py, pz] of EAST_FIXED_TREES) {
+    placeTree(px, pz, py, rf(8, 15))
   }
 
   // Loose rocks for flavour (used to be grey "ruin block" box primitives).
@@ -988,6 +1137,16 @@ function buildWest() {
     const py = 3 + i * 2.6 + MOVING_PLATFORM_LIFT
     const dx = rf(6, 11)
     const baseY = py - 0.2 // base-anchored model — see the Catwalk Platform loop above
+
+    // i===0 (this seed lands it around 25,19,96) reported as blocking the
+    // user's exit near the fortress — dropped per explicit request. Still
+    // burns the same rf() draws above so every OTHER platform here, and
+    // every zone generated after this one, keeps its exact existing layout
+    // (this is one shared seeded RNG stream for the whole world — skipping
+    // the draws entirely would reshuffle everything downstream, not just
+    // this platform).
+    if (i === 0) continue
+
     addFoundryPlatform(px, baseY, pz, 3.4, 3.4, 0.4, {
       tween: {
         duration: 4200,
@@ -1441,14 +1600,23 @@ if (!existsSync(resolve(ROOT, PINE_MODEL.src))) {
   throw new Error(`Missing ${PINE_MODEL.src} — the ice zone's pines need this model.`)
 }
 
-/** Place a pine at `[px, pz]`, its base sitting at `groundY`, scaled to `targetHeight` metres tall. */
-function addPine(px, pz, groundY, targetHeight) {
+/**
+ * Place a pine at `[px, pz]`, its base sitting at `groundY`, scaled to
+ * `targetHeight` metres tall. `skip` still burns the rotation rf() draw
+ * below (same as a normal call) but doesn't actually create the entity —
+ * used to drop one specific pine from the random loop without reshuffling
+ * every pine/rock/etc. placed after it off this one shared seeded RNG
+ * stream.
+ */
+function addPine(px, pz, groundY, targetHeight, skip = false) {
   const scale = targetHeight / PINE_MODEL.nativeHeight
+  const rot = yawQuat(rf(0, 360))
+  if (skip) return null
   const id = add({
     name: 'Pine',
     pos: [px, groundY - PINE_MODEL.nativeMinY * scale, pz],
     scale: [scale, scale, scale],
-    rot: yawQuat(rf(0, 360)),
+    rot,
     mesh: 'none',
     collider: 0
   })
@@ -1538,7 +1706,9 @@ function buildNorth() {
 
   // Pines & boulders
   for (let i = 0; i < 7; i++) {
-    addPine(rf(x0 + 3, x0 + BLOCK - 3), rf(z0 + 3, z0 + BLOCK - 12), 0.05, rf(3, 9))
+    // i===6 (this seed lands it around 88.5,135.3, the one reported near
+    // 87,0.1,135) dropped per explicit request — see addPine's skip param.
+    addPine(rf(x0 + 3, x0 + BLOCK - 3), rf(z0 + 3, z0 + BLOCK - 12), 0.05, rf(3, 9), i === 6)
   }
   for (let i = 0; i < 7; i++) {
     addRock(rf(x0 + 3, x0 + BLOCK - 3), rf(z0 + 3, z0 + BLOCK - 12), 0.05, rf(1.6, 3))
@@ -1595,50 +1765,11 @@ function buildCorners() {
 function buildDecoration() {
   if (!WITH_MODELS) return
 
-  const scatter = (zone, count, fn) => {
-    const list = anchors[zone]
-    if (!list.length) return
-    for (let i = 0; i < count; i++) {
-      const a = list[Math.floor(rnd() * list.length)]
-      fn(a[0], a[1] - 1.0, a[2], i)
-    }
-  }
-
-  scatter('EAST', 70, (x, y, z, i) => {
-    const slug = i % 3 === 0 ? 'fern' : i % 3 === 1 ? 'jungle-plant-06' : 'parque'
-    const scale = slug === 'parque' ? 0.5 : rf(0.8, 1.4)
-    addModel('Jungle Prop', slug, [x + rf(-0.5, 0.5), y, z + rf(-0.5, 0.5)], {
-      scale: [scale, scale, scale],
-      rot: yawQuat(rf(0, 360))
-    })
-  })
-
-  scatter('WEST', 45, (x, y, z, i) => {
-    const slug = i % 2 === 0 ? 'wm-barrel-glb' : 'crate'
-    addModel('Foundry Prop', slug, [x + rf(-0.6, 0.6), y, z + rf(-0.6, 0.6)], {
-      scale: [1, 1, 1],
-      rot: yawQuat(rf(0, 360)),
-      solid: true
-    })
-  })
-
-  scatter('SOUTH', 40, (x, y, z, i) => {
-    const slug = i % 2 === 0 ? 'statue' : 'pebble-03'
-    const scale = slug === 'pebble-03' ? 0.05 : rf(0.7, 1.1)
-    addModel('Tomb Prop', slug, [x + rf(-0.5, 0.5), y, z + rf(-0.5, 0.5)], {
-      scale: [scale, scale, scale],
-      rot: yawQuat(rf(0, 360))
-    })
-  })
-
-  scatter('NORTH', 45, (x, y, z, i) => {
-    const slug = i % 3 === 0 ? 'pine' : i % 3 === 1 ? 'cp6' : 'cp8'
-    const scale = slug === 'pine' ? rf(0.5, 0.9) : rf(0.8, 1.6)
-    addModel('Frozen Prop', slug, [x + rf(-0.6, 0.6), y, z + rf(-0.6, 0.6)], {
-      scale: [scale, scale, scale],
-      rot: yawQuat(rf(0, 360))
-    })
-  })
+  // The 70-instance EAST ground scatter (fern/jungle-plant-06/parque, later
+  // just jungle-plant-06) and the WEST/SOUTH/NORTH prop scatter were all
+  // dropped per explicit request — too busy/ugly. The only jungle-plant-06
+  // left is the hard-capped-at-3 wall sprinkle up in buildEast() (see
+  // MAX_WALL_PLANTS). Nothing left to scatter here for now.
 }
 
 /* ================================================================== *
@@ -1782,7 +1913,7 @@ console.log(
     `anchors: N=${anchorsOut.NORTH.length} S=${anchorsOut.SOUTH.length} ` +
     `E=${anchorsOut.EAST.length} W=${anchorsOut.WEST.length}\n` +
     `lights: ${Object.keys(lightSources).length}   skybox: fixed at ${SKYBOX_FIXED_TIME}s (noon)\n` +
-    `GLB props: ${WITH_MODELS ? Object.keys(gltfContainers).length : 'disabled (pass --with-models)'}`
+    `GLB props: ${WITH_MODELS ? Object.keys(gltfContainers).length : 'disabled (--no-models)'}`
 )
 if (missingModels.size) {
   console.log(
