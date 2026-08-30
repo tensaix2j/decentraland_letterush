@@ -6,7 +6,7 @@
     "USE_FETCH"
   ],
   "display": {
-    "title": "Letterush",
+    "title": "LetteRush",
     "description": "Race through four themed parkour zones to collect letter tiles, then race back to the giant 21x21 board to spell words and score. Multiplayer, 10-minute rounds.",
     "navmapThumbnail": "assets/images/navmapThumbnail.jpg",
     "favicon": "favicon_asset"
@@ -203,7 +203,7 @@
       "fixedTime": 43200
     },
     "placesConfig": {
-      "optOut": true
+      "optOut": false
     }
   },
   "landscapeTerrain": false

@@ -487,19 +487,12 @@ export function showStagedLetter(cell: number, letterIndex: number): void {
   let entity = stagedLetterEntities.get(cell)
   if (!entity) {
     // Staged: left standing proud of the board until it's actually accepted.
-    console.log("JDEBUG", Date.now() );
-  
     entity = createBoardLetterEntity(cell, false)
-
-    console.log("JDEBUG_B", Date.now() );
-    
     stagedLetterEntities.set(cell, entity)
     
-    console.log("JDEBUG_C", Date.now() );
     
   }
   styleAsLetter(entity, letterIndex)
-  console.log("JDEBUG_D", Date.now() );
     
 }
 

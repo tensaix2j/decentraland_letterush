@@ -69,6 +69,9 @@ const EMPTY_BOARD: number[] = new Array(BOARD_CELLS).fill(0)
 
 /** Create every synced entity. MUST be called from main(). */
 export function createSyncedState(): void {
+
+  //console.log("JDEBUG: createSyncedState");  
+  
   roundEntity = engine.addEntity()
   RoundState.create(roundEntity, { roundId: 0, endsAt: 0, nextSpawnAt: 0 })
   syncEntity(roundEntity, [RoundState.componentId], SyncId.ROUND)
@@ -103,6 +106,8 @@ export function createSyncedState(): void {
     syncEntity(tile, [Transform.componentId, TileState.componentId], SyncId.TILE_BASE + i)
     tileEntities.push(tile)
   }
+  //console.log("JDEBUG: createSyncedState Done");  
+  
 }
 
 /* ------------------------------------------------------------------ *

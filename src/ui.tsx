@@ -420,6 +420,35 @@ function MobileBagRow(props: { t: Theme }) {
 }
 
 /**
+ * Tiny control legend under the mobile bag row.
+ *
+ * Desktop has always shown this (the `[1] drop · [2]/[3] switch · [E] stage ·
+ * [F] submit` line in DesktopUi below), but mobile never did — its E/F
+ * buttons come from the explorer's own touch HUD, not something this scene
+ * draws, so there was nothing here to explain them. That silence reads fine
+ * for "E places the tile you've selected," but F silently doing double duty
+ * (drop the selected tile if nothing's staged, else submit the staged word)
+ * is not discoverable by tapping around — mobile players were reporting they
+ * had no idea how to drop a tile. This mirrors the desktop line's content in
+ * mobile's own button vocabulary, sized well under t.font.tiny so it fits
+ * the sliver of space between the bag row and the explorer's own version
+ * string without crowding it.
+ */
+const MOBILE_HINT_FONT = 9
+
+function MobileControlsHint(props: { t: Theme }) {
+  const t = props.t
+  return (
+    <OutlinedLabel
+      value={`BAG ${getInventory().length}/${MAX_INVENTORY}  ·  [E] place  ·  [F] submit  · [1] drop`}
+      fontSize={MOBILE_HINT_FONT}
+      color={MUTED}
+      height={16}
+    />
+  )
+}
+
+/**
  * Text with a hard outline around it.
  *
  * SDK7's 2D UI text has no stroke of any kind — `PBUiText` exposes only
@@ -653,6 +682,7 @@ function MobileUi(t: Theme) {
           <Toasts t={t} />
           <Hint t={t} />
           <MobileBagRow t={t} />
+          <MobileControlsHint t={t} />
         </UiEntity>
       </UiEntity>
 

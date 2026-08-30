@@ -75,6 +75,9 @@ function hostSystem(dt: number): void {
   accum += dt * 1000
   if (accum < HOST_TICK_MS) return
   accum = 0
+
+  //console.log("JDEBUG : isStateSyncronized: ", isStateSyncronized() , "isHost", isHost() );
+
   if (!isStateSyncronized()) return
   if (!isHost()) return
 
