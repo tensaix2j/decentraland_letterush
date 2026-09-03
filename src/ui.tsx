@@ -37,6 +37,7 @@ import {
 import { letterUiUvs } from './letters'
 import { isHost, myAddress } from './players'
 import { Theme, theme, watchPlatform } from './platform'
+import { isBgmMuted, toggleBgmMute } from './bgm'
 
 const PANEL_BG = Color4.create(0.05, 0.05, 0.08, 0.68)
 const ACCENT = Color4.create(0.95, 0.76, 0.27, 1)
@@ -44,6 +45,76 @@ const TEXT = Color4.create(0.96, 0.95, 0.92, 1)
 const MUTED = Color4.create(0.72, 0.72, 0.76, 1)
 const WARN_TEXT = Color4.create(1, 0.55, 0.45, 1)
 const SLOT_EMPTY_BORDER = Color4.create(1, 1, 1, 0.16)
+
+/**
+ * Mute/unmute icon atlas — 2 columns x 1 row, col 0 (left half) is a plain
+ * speaker, col 1 (right half) is the same speaker with a slash over it. The
+ * icon SHOWN reflects the CURRENT state (slash visible while muted), same
+ * convention as most mute buttons — it reads as "this is what's happening
+ * now," not "tap this to get this."
+ */
+const TEXTURE_ICONS_MUTE = 'assets/textures/icons_mute.png'
+
+/** A small inset stops the neighbouring icon bleeding in through bilinear filtering, same idea as letters.ts's PAD. */
+const MUTE_ICON_PAD = 0.004
+
+function muteIconUvs(muted: boolean): number[] {
+  const col = muted ? 1 : 0
+  const u0 = col / 2 + MUTE_ICON_PAD
+  const u1 = (col + 1) / 2 - MUTE_ICON_PAD
+  // 2D UI texture V is downward (v=0 = top of the PNG) — same convention as
+  // letterUiUvs in letters.ts. Single row, so the icon spans the full height.
+  const v0 = MUTE_ICON_PAD
+  const v1 = 1 - MUTE_ICON_PAD
+  // Bottom-left, top-left, top-right, bottom-right — the order uiBackground.uvs expects.
+  return [u0, v0, u0, v1, u1, v1, u1, v0]
+}
+
+/** Mobile: rendered inline in MobileClock's row, next to the round chip. */
+function MuteButton(props: { t: Theme }) {
+  const size = 32
+  const muted = isBgmMuted()
+  return (
+    <UiEntity
+      uiTransform={{ width: size, height: size, margin: { left: 6 }, pointerFilter: 'block' }}
+      uiBackground={{ texture: { src: TEXTURE_ICONS_MUTE }, textureMode: 'stretch', uvs: muteIconUvs(muted) }}
+      onMouseDown={() => toggleBgmMute()}
+    />
+  )
+}
+
+/**
+ * Desktop: standalone and absolutely positioned, outside StatusPanel's own
+ * box rather than inline inside it — per explicit request, sitting just past
+ * the panel's right edge, top-aligned with the panel itself (same `16 +
+ * insets.top` StatusPanel uses). 2x MuteButton's size (52 vs 26), also per
+ * explicit request. Left offset (300 + gap) is StatusPanel's own width, not
+ * derived from it — the two aren't wired together, so if StatusPanel's width
+ * ever changes this will need a manual nudge to match.
+ */
+const DESKTOP_MUTE_ICON_SIZE = 52
+const DESKTOP_MUTE_GAP = 12
+
+function DesktopMuteButton(props: { t: Theme }) {
+  const t = props.t
+  const muted = isBgmMuted()
+  return (
+    <UiEntity
+      uiTransform={{
+        positionType: 'absolute',
+        position: {
+          top: 16 + t.insets.top,
+          left: 16 + t.insets.left + 300 + DESKTOP_MUTE_GAP
+        },
+        width: DESKTOP_MUTE_ICON_SIZE,
+        height: DESKTOP_MUTE_ICON_SIZE,
+        pointerFilter: 'block'
+      }}
+      uiBackground={{ texture: { src: TEXTURE_ICONS_MUTE }, textureMode: 'stretch', uvs: muteIconUvs(muted) }}
+      onMouseDown={() => toggleBgmMute()}
+    />
+  )
+}
 
 function clock(msRemaining: number): string {
   const total = Math.max(0, Math.floor(msRemaining / 1000))
@@ -186,6 +257,7 @@ function MobileClock(props: { t: Theme }) {
           <OutlinedLabel value={`R${round ? round.roundId : '-'}`} fontSize={t.font.tiny} color={MUTED} textAlign="middle-left" />
         </UiEntity>
       )}
+      <MuteButton t={t} />
     </UiEntity>
   )
 }
@@ -696,6 +768,7 @@ function DesktopUi(t: Theme) {
   return (
     <UiEntity uiTransform={{ width: '100%', height: '100%' }}>
       <StatusPanel t={t} />
+      <DesktopMuteButton t={t} />
       <Leaderboard t={t} />
       <UiEntity
         uiTransform={{

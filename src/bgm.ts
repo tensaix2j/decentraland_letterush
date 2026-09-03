@@ -1,65 +1,140 @@
 /**
- * Continuous background music, streamed directly from the user's own hosted
- * URL rather than a local file — explicit choice (they're paying to host it
- * there, so a local copy in assets/sounds/ isn't wanted).
+ * Continuous background music — platform-branched implementation.
  *
- * That means AudioStream, not AudioSource: AudioSource only accepts local
- * file paths, while AudioStream takes a URL directly. The tradeoff is
- * AudioStream has no `loop` field (see audio_stream.proto — just
- * playing/volume/url/spatial), so a one-shot music file played through it
- * finishes once and stops rather than looping the way AudioSource would.
- * bgmLoopSystem below works around that: it watches the stream's MediaState
- * and restarts playback (toggle playing off then on, which re-triggers the
- * URL fetch from the start) once state drops out of MS_PLAYING after having
- * genuinely reached it — i.e. only once the clip has actually finished, not
- * while it's still loading/buffering on the very first connect. There will
- * be a brief gap between loops while it reconnects — a real limitation of
- * streaming a finite file instead of a true loop, not a bug.
+ * Desktop Unity: AudioStream off a Cloudflare R2-hosted URL. This is the
+ * ORIGINAL approach, restored — it played fine on desktop from the start.
+ * AudioStream has no `loop` field (just playing/volume/url/spatial — see
+ * audio_stream.proto), so bgmLoopSystem below watches the stream's
+ * MediaState and restarts playback once it's actually finished (not while
+ * still loading/buffering), plus retries after a cooldown on MS_ERROR.
  *
- * Reported: plays on desktop Unity, silent on mobile Godot. Nothing in this
- * file is platform-branched, so the divergence is almost certainly outside
- * this code — two likely causes, in order of likelihood:
+ * Mobile Godot: AudioSource off a local file at assets/Audio/apalonbeats.mp3.
+ * AudioStream (the R2 URL) played on desktop but stayed silent on mobile —
+ * most likely a CORS/streaming limitation specific to Godot's stream loader,
+ * never fully confirmed since it can't be reproduced from this sandbox. Local
+ * AudioSource sidesteps that class of problem entirely and mobile has been
+ * confirmed working, so per explicit request this path is untouched.
  *
- * 1. CORS on the R2 bucket. The SDK docs are explicit that the stream's host
- *    "should have CORS policies that permit externally accessing it" —
- *    Cloudflare R2's public r2.dev domain does NOT send
- *    Access-Control-Allow-Origin by default, it has to be configured on the
- *    bucket. Unity's desktop stream loader may not enforce this while the
- *    Godot mobile client's does, which would exactly explain "works on
- *    desktop, silent on mobile." Fix is on the Cloudflare side (R2 bucket →
- *    Settings → CORS Policy → allow origin "*"), not in this file.
- * 2. Mobile OS-level autoplay/user-gesture gating on audio that starts
- *    playing before the player has touched the screen. bgmLoopSystem now
- *    logs every state transition and retries on MS_ERROR — if it's this,
- *    the logs will show it stuck rather than erroring, which points back to
- *    cause 1 or a genuine network failure instead.
- *
- * Can't reproduce mobile Godot from this sandbox, so the fix here is making
- * the failure observable (console logging) and self-healing on transient
- * errors, not a blind guess at the platform bug itself.
- *
- * Per explicit request, BGM is now desktop-Unity only — mobile Godot skips
- * it entirely (the AudioStream entity is never created there), rather than
- * continuing to chase the platform-specific playback bug above.
+ * Tried making mobile's approach (AudioSource + local file) the ONLY
+ * implementation for both platforms, since it's the simpler one component-
+ * wise — but that broke desktop: setting `playing: true` on AudioSource
+ * before the clip had necessarily finished loading left desktop Unity
+ * silent, even after deferring the start by ~0.5s. Rather than keep chasing
+ * a desktop-specific AudioSource timing bug, this reverts desktop to the
+ * AudioStream implementation that was already proven to work there, and
+ * keeps AudioSource only where it's proven to work (mobile). Two code paths,
+ * but each one matches what's actually been confirmed on that platform.
  */
 
-import { AudioStream, Entity, MediaState, engine } from '@dcl/sdk/ecs'
-import { getPlatform, isMobile } from '@dcl/sdk/platform'
+import { AudioSource, AudioStream, Entity, MediaState, engine } from '@dcl/sdk/ecs'
+import { watchPlatform } from './platform'
 
 const BGM_URL = 'https://pub-bf766ea06d2944ffb279490084a5a4a7.r2.dev/apalonbeats.mp3'
-const BGM_VOLUME = 0.3
-/** Cooldown before retrying after MS_ERROR — long enough not to hammer a
- * genuinely-down host, short enough that a transient blip self-heals fast. */
+const BGM_CLIP = 'assets/Audio/apalonbeats.mp3'
+const BGM_VOLUME_DESKTOP = 0.4
+// Mobile device speakers are quieter and usually held further from the ear
+// than a desktop setup, and this track was getting lost under footstep/SFX
+// noise on Godot — bumped well above desktop's per explicit request.
+const BGM_VOLUME_MOBILE = 0.65
+/** Cooldown before retrying after MS_ERROR (AudioStream / desktop only) — long
+ * enough not to hammer a genuinely-down host, short enough that a transient
+ * blip self-heals fast. */
 const RETRY_COOLDOWN_MS = 5000
-/** How often to poll for the platform report while waiting for it to resolve. */
-const PLATFORM_POLL_S = 0.5
 
 let bgmEntity: Entity | null = null
+/** Which component the active entity uses — decides how mute/retry/loop are applied. */
+let usingStream = false
+/** Session-local only — resets on reload. No persistence layer to save this to. */
+let muted = false
+/** The platform-appropriate volume to restore to on unmute — starts at the
+ * desktop value since isMobile() isn't trustworthy until watchPlatform's
+ * first callback (same caveat platform.ts documents for theme()/quality()). */
+let baseVolume = BGM_VOLUME_DESKTOP
+let started = false
+
+/** MUST be called once from main(), same as setupSfx(). Waits for the
+ * platform report (same mechanism ui.tsx's setupUi() uses) before deciding
+ * which implementation to create, then only ever runs that one branch for
+ * the rest of the session — see the module header for why they differ. */
+export function setupBgm(): void {
+  watchPlatform((t) => {
+    baseVolume = t.mobile ? BGM_VOLUME_MOBILE : BGM_VOLUME_DESKTOP
+
+    if (!started) {
+      started = true
+      if (t.mobile) {
+        bgmEntity = engine.addEntity()
+        AudioSource.create(bgmEntity, {
+          audioClipUrl: BGM_CLIP,
+          playing: true,
+          loop: true,
+          volume: baseVolume,
+          global: true
+        })
+      } else {
+        usingStream = true
+        bgmEntity = engine.addEntity()
+        AudioStream.create(bgmEntity, { url: BGM_URL, playing: true, volume: baseVolume })
+        engine.addSystem(bgmLoopSystem)
+      }
+      console.log('[bgm] started, mobile =', t.mobile)
+      return
+    }
+
+    // Later firings (window resize/orientation change) only ever re-apply
+    // volume — the branch/entity itself is locked in by `started` above.
+    if (bgmEntity !== null && !muted) {
+      if (usingStream) AudioStream.getMutable(bgmEntity).volume = baseVolume
+      else AudioSource.getMutable(bgmEntity).volume = baseVolume
+    }
+  })
+}
+
+export function isBgmMuted(): boolean {
+  return muted
+}
+
+/**
+ * Mute behaviour differs per component, because they turned out not to be
+ * symmetric:
+ *
+ * - AudioSource (mobile): zeroing `volume` on an already-playing clip takes
+ *   effect live, so mute just sets volume to 0 and unmute restores it — the
+ *   track keeps advancing silently in between, no restart either way.
+ * - AudioStream (desktop): reported not to respond to a live `volume` change
+ *   at all while already connected/playing — Unity's stream implementation
+ *   most likely only reads volume at connect time, same as this file's
+ *   existing loop/retry logic already has to force a full reconnect
+ *   (`playing` off then on) to pick up ANY change. So mute instead stops the
+ *   stream outright (`playing = false`) and unmute reconnects it from the
+ *   start (`playing = true`) — bgmLoopSystem's `muted` check below stops it
+ *   from mistaking that manual pause for "the stream finished" and
+ *   auto-restarting it out from under the mute.
+ */
+export function toggleBgmMute(): void {
+  if (bgmEntity === null) return
+  muted = !muted
+
+  if (usingStream) {
+    const mut = AudioStream.getMutable(bgmEntity)
+    mut.playing = !muted
+    mut.volume = baseVolume
+    if (!muted) everPlayed = false // reconnecting from scratch — let it "arrive" at MS_PLAYING again before finish-detection re-arms
+  } else {
+    AudioSource.getMutable(bgmEntity).volume = muted ? 0 : baseVolume
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Desktop-only: AudioStream has no native loop, so this watches MediaState
+ * and manually restarts playback once the stream has genuinely finished
+ * (not while still connecting/buffering), plus retries after a cooldown on
+ * MS_ERROR (host unreachable, CORS rejection, bad format, etc.).
+ * ------------------------------------------------------------------ */
+
 let everPlayed = false
 let lastLoggedState: MediaState | undefined = undefined
 let lastRetryAt = 0
-let platformDecided = false
-let pollAccum = 0
 
 // MediaState is a const enum (inlined at compile time), so it can't be
 // reverse-indexed like a normal enum for logging — spell the names out.
@@ -74,41 +149,16 @@ const MEDIA_STATE_NAME: Record<MediaState, string> = {
   [MediaState.MS_ERROR]: 'MS_ERROR'
 }
 
-/** MUST be called once from main(), same as setupSfx(). */
-export function setupBgm(): void {
-  engine.addSystem(bgmStartSystem)
-}
-
-/**
- * Waits for the platform report before deciding whether to start music at
- * all. getPlatform() reports null for the first several frames after scene
- * start (same caveat platform.ts's own watchPlatform works around) — calling
- * isMobile() before then risks defaulting to "desktop" and starting the
- * stream on a phone, which is exactly what this gate exists to prevent.
- * Stops polling for good (platformDecided) once resolved either way.
- */
-function bgmStartSystem(dt: number): void {
-  if (platformDecided) return
-  pollAccum += dt
-  if (pollAccum < PLATFORM_POLL_S) return
-  pollAccum = 0
-  if (getPlatform() === null) return
-  platformDecided = true
-
-  if (isMobile()) return // desktop Unity only, per explicit request
-
-  bgmEntity = engine.addEntity()
-  AudioStream.create(bgmEntity, { url: BGM_URL, playing: true, volume: BGM_VOLUME })
-  engine.addSystem(bgmLoopSystem)
-}
-
 function bgmLoopSystem(): void {
   if (bgmEntity === null) return
+  // While muted, `playing` is deliberately false (see toggleBgmMute) — that
+  // looks identical to "the stream finished" from MediaState's own
+  // perspective, so this system must stand down entirely rather than
+  // "helpfully" restarting playback and undoing the mute.
+  if (muted) return
   const state = AudioStream.getAudioState(bgmEntity)?.state
 
   if (state !== lastLoggedState) {
-    // Visible in the client's own dev console on either platform — the one
-    // piece of ground truth we don't otherwise have for a mobile-only bug.
     console.log(`[bgm] stream state -> ${state === undefined ? 'undefined' : MEDIA_STATE_NAME[state]}`)
     lastLoggedState = state
   }
@@ -118,8 +168,6 @@ function bgmLoopSystem(): void {
     return
   }
 
-  // Stream errored (host unreachable, CORS rejection, bad format, etc.) —
-  // retry after a cooldown rather than sitting silently forever.
   if (state === MediaState.MS_ERROR) {
     const now = Date.now()
     if (now - lastRetryAt >= RETRY_COOLDOWN_MS) {
